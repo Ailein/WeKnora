@@ -269,6 +269,8 @@ import dingtalkLogo from '@/assets/img/im/dingtalk.svg';
 import mattermostLogo from '@/assets/img/im/mattermost.svg';
 import wechatLogo from '@/assets/img/im/wechat.svg';
 import qqbotLogo from '@/assets/img/im/qqbot.png';
+import yunzhijiaLogo from '@/assets/img/im/yunzhijia.svg';
+import whatsappLogo from '@/assets/img/im/whatsapp.svg';
 
 const PLATFORM_LOGO: Record<string, string> = {
     wecom: wecomLogo,
@@ -280,6 +282,8 @@ const PLATFORM_LOGO: Record<string, string> = {
     mattermost: mattermostLogo,
     wechat: wechatLogo,
     qqbot: qqbotLogo,
+    yunzhijia: yunzhijiaLogo,
+    whatsapp: whatsappLogo,
 };
 
 const platformLogo = (p: string): string => (p ? PLATFORM_LOGO[p] || '' : '');

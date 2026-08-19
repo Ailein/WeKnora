@@ -26,6 +26,12 @@
                 <t-tag v-if="!channel.enabled" size="small" variant="light" theme="warning">
                   {{ $t('agentEditor.im.disabled') }}
                 </t-tag>
+                <span v-else-if="cardStatus(channel)" class="channel-card__status"
+                  :class="`channel-card__status--${statusTone(cardStatus(channel)?.state)}`"
+                  :title="cardStatus(channel)?.detail || ''">
+                  <span class="channel-card__status-dot" aria-hidden="true" />
+                  {{ statusText(cardStatus(channel)?.state) }}
+                </span>
               </div>
               <span v-if="agentDisplayName(channel)" class="channel-card__agent-name">
                 {{ agentDisplayName(channel) }}
@@ -146,7 +152,9 @@
 
       <!-- Step 2: Connection -->
       <div v-else-if="wizardStep === 1" class="im-step-body">
-        <section v-if="formData.platform !== 'wechat'" class="setting-drawer__section im-drawer__section">
+        <!-- WeChat and WhatsApp run on a fixed connection mode with full output -->
+        <section v-if="formData.platform !== 'wechat' && formData.platform !== 'whatsapp'"
+          class="setting-drawer__section im-drawer__section">
           <h4 class="setting-drawer__section-title">{{ $t('agentEditor.im.sectionAccess') }}</h4>
 
           <div class="form-item">
@@ -573,6 +581,61 @@
                 </div>
               </div>
             </template>
+
+            <!-- WhatsApp credentials (QR pairing via WhatsApp Web multidevice protocol) -->
+            <template v-if="formData.platform === 'whatsapp'">
+              <p class="form-desc">{{ $t('agentEditor.im.whatsappHint') }}</p>
+              <p class="form-desc whatsapp-risk-warning">{{ $t('agentEditor.im.whatsappRiskWarning') }}</p>
+
+              <!-- Already paired state, colored by the live runtime status.
+                   During re-pairing the existing binding is kept in the form
+                   so a failed attempt cannot lose it. -->
+              <template v-if="whatsappBound && !whatsappRepairing">
+                <div class="wechat-bound-status" :class="`wechat-bound-status--${whatsappDrawerTone}`">
+                  <t-icon :name="whatsappDrawerIcon" class="bound-icon" />
+                  <span>{{ whatsappDrawerText }}
+                    <span class="mono-text">{{ formData.credentials.device_jid }}</span></span>
+                  <t-button size="small" :variant="whatsappNeedsRepair ? 'base' : 'outline'"
+                    :theme="whatsappNeedsRepair ? 'primary' : 'default'" @click="startWhatsAppBinding">
+                    {{ $t('agentEditor.im.whatsappRebind') }}
+                  </t-button>
+                </div>
+                <p v-if="drawerStatus?.detail && whatsappDrawerTone !== 'ok'" class="form-desc whatsapp-status-detail">
+                  {{ drawerStatus.detail }}
+                </p>
+              </template>
+
+              <!-- QR pairing flow -->
+              <div v-else class="wechat-qr-section">
+                <div v-if="!whatsappQRImg" class="wechat-bind-action">
+                  <t-button theme="default" variant="outline" :loading="whatsappLoading" @click="startWhatsAppBinding">
+                    <template #icon><t-icon name="scan" /></template>
+                    {{ $t('agentEditor.im.whatsappScanBind') }}
+                  </t-button>
+                </div>
+                <div v-else class="wechat-qr-display">
+                  <div class="qr-container">
+                    <img :src="whatsappQRImg" alt="WhatsApp QR Code" class="qr-image" />
+                    <div v-if="whatsappQRStatus === 'expired' || whatsappQRStatus === 'error'"
+                      class="qr-expired-overlay" @click="startWhatsAppBinding">
+                      <t-icon name="refresh" class="refresh-icon" />
+                      <span>{{ $t('agentEditor.im.whatsappQRExpired') }}</span>
+                    </div>
+                  </div>
+                  <p class="qr-hint">{{ $t('agentEditor.im.whatsappScanning') }}</p>
+                </div>
+                <t-button v-if="whatsappRepairing && formData.credentials.device_jid" size="small" variant="text"
+                  theme="default" @click="cancelWhatsAppRepairing">
+                  {{ $t('common.cancel') }}
+                </t-button>
+              </div>
+
+              <div class="form-item">
+                <label class="form-label">{{ $t('agentEditor.im.whatsappAllowFrom') }}</label>
+                <t-input v-model="formData.credentials.allow_from" placeholder="8613800138000,15551234567" />
+                <p class="form-desc">{{ $t('agentEditor.im.whatsappAllowFromHint') }}</p>
+              </div>
+            </template>
           </div>
         </section>
       </div>
@@ -587,8 +650,9 @@ import { MessagePlugin } from 'tdesign-vue-next';
 import { copyWithToast } from '@/utils/clipboard';
 import {
   listIMChannels, createIMChannel, updateIMChannel, deleteIMChannel, toggleIMChannel,
-  getWeChatQRCode, pollWeChatQRCodeStatus, listAllIMChannels, listAgents,
-  type IMChannelOverview, type CustomAgent,
+  getWeChatQRCode, pollWeChatQRCodeStatus, startWhatsAppPairing, pollWhatsAppPairing,
+  getIMChannelStatus, listAllIMChannels, listAgents,
+  type IMChannelOverview, type CustomAgent, type IMChannelRuntimeStatus,
 } from '@/api/agent';
 import { useChatResourcesStore } from '@/stores/chatResources';
 import type { IMChannel } from '@/api/agent';
@@ -605,6 +669,7 @@ import mattermostLogo from '@/assets/img/im/mattermost.svg';
 import wechatLogo from '@/assets/img/im/wechat.svg';
 import qqbotLogo from '@/assets/img/im/qqbot.png';
 import yunzhijiaLogo from '@/assets/img/im/yunzhijia.svg';
+import whatsappLogo from '@/assets/img/im/whatsapp.svg';
 
 type IMPlatform = IMChannel['platform'];
 
@@ -619,6 +684,7 @@ const PLATFORM_LOGO: Record<string, string> = {
   wechat: wechatLogo,
   qqbot: qqbotLogo,
   yunzhijia: yunzhijiaLogo,
+  whatsapp: whatsappLogo,
 };
 
 const platformLogo = (platform: string): string => (platform ? PLATFORM_LOGO[platform] || '' : '');
@@ -671,6 +737,7 @@ const platformOptions = computed(() => ([
   { value: 'wechat' as IMPlatform, label: t('agentEditor.im.wechat'), logo: wechatLogo },
   { value: 'qqbot' as IMPlatform, label: t('agentEditor.im.qqbot'), logo: qqbotLogo },
   { value: 'yunzhijia' as IMPlatform, label: t('agentEditor.im.yunzhijia'), logo: yunzhijiaLogo },
+  { value: 'whatsapp' as IMPlatform, label: t('agentEditor.im.whatsapp'), logo: whatsappLogo },
 ]));
 
 // Feishu and Lark are the same product on separate clouds, so each has its own
@@ -712,6 +779,131 @@ async function handleDrawerConfirm() {
 // Knowledge base options for file-to-KB feature
 const knowledgeBases = ref<{ id: string; name: string }[]>([]);
 
+// ── Channel runtime status ──
+// Live health per channel, fetched only for platforms whose adapter reports
+// connection state (currently WhatsApp). The card list refreshes on load and
+// periodically; the drawer polls faster while a paired channel is open so a
+// dead pairing shows up as "re-pair required" instead of a stale green tick.
+const STATUS_PLATFORMS = new Set<string>(['whatsapp']);
+const CARD_STATUS_REFRESH_MS = 30000;
+const DRAWER_STATUS_REFRESH_MS = 15000;
+
+const channelStatuses = ref<Record<string, IMChannelRuntimeStatus>>({});
+const drawerStatus = ref<IMChannelRuntimeStatus | null>(null);
+let cardStatusTimer: ReturnType<typeof setInterval> | null = null;
+let drawerStatusTimer: ReturnType<typeof setInterval> | null = null;
+
+type StatusTone = 'ok' | 'warn' | 'error' | 'muted';
+
+function statusTone(state?: string): StatusTone {
+  switch (state) {
+    case 'connected':
+    case 'running':
+      return 'ok';
+    case 'connecting':
+      return 'warn';
+    case 'disabled':
+    case 'not_running':
+    case undefined:
+      return 'muted';
+    default:
+      return 'error';
+  }
+}
+
+function statusText(state?: string): string {
+  switch (state) {
+    case 'connected':
+    case 'running':
+      return t('agentEditor.im.statusConnected');
+    case 'connecting':
+      return t('agentEditor.im.statusConnecting');
+    case 'logged_out':
+      return t('agentEditor.im.statusLoggedOut');
+    case 'needs_pairing':
+      return t('agentEditor.im.statusNeedsPairing');
+    case 'stream_replaced':
+      return t('agentEditor.im.statusStreamReplaced');
+    case 'not_running':
+      return t('agentEditor.im.statusNotRunning');
+    case 'disabled':
+      return t('agentEditor.im.disabled');
+    default:
+      return t('agentEditor.im.statusError');
+  }
+}
+
+// Status shown on a channel card; disabled channels already carry a tag.
+function cardStatus(channel: { id: string; enabled?: boolean }): IMChannelRuntimeStatus | null {
+  if (channel.enabled === false) return null;
+  return channelStatuses.value[channel.id] || null;
+}
+
+async function refreshChannelStatuses() {
+  const targets = allChannels.value.filter(
+    (ch) => STATUS_PLATFORMS.has(ch.platform) && ch.enabled !== false,
+  );
+  if (targets.length === 0) {
+    channelStatuses.value = {};
+    return;
+  }
+  const results = await Promise.allSettled(
+    targets.map(async (ch) => ({ id: ch.id, status: (await getIMChannelStatus(ch.id)).data })),
+  );
+  const next: Record<string, IMChannelRuntimeStatus> = {};
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value.status) next[r.value.id] = r.value.status;
+  }
+  channelStatuses.value = next;
+}
+
+function startDrawerStatusPolling(channelId: string) {
+  stopDrawerStatusPolling();
+  const fetchOnce = async () => {
+    try {
+      const res = await getIMChannelStatus(channelId);
+      drawerStatus.value = res.data || null;
+    } catch {
+      // keep the last snapshot; transient fetch errors must not flip the badge
+    }
+  };
+  void fetchOnce();
+  drawerStatusTimer = setInterval(fetchOnce, DRAWER_STATUS_REFRESH_MS);
+}
+
+function stopDrawerStatusPolling() {
+  if (drawerStatusTimer) {
+    clearInterval(drawerStatusTimer);
+    drawerStatusTimer = null;
+  }
+  drawerStatus.value = null;
+}
+
+// Drawer badge for an already-paired WhatsApp channel. Until the first status
+// response arrives (or for a freshly paired, unsaved channel) fall back to the
+// plain "paired" look rather than flashing an error state.
+const whatsappDrawerTone = computed<StatusTone>(() =>
+  drawerStatus.value ? statusTone(drawerStatus.value.state) : 'ok',
+);
+const whatsappDrawerText = computed(() =>
+  drawerStatus.value ? statusText(drawerStatus.value.state) : t('agentEditor.im.whatsappBindSuccess'),
+);
+const whatsappNeedsRepair = computed(() =>
+  drawerStatus.value ? ['logged_out', 'needs_pairing'].includes(drawerStatus.value.state) : false,
+);
+const whatsappDrawerIcon = computed(() => {
+  switch (whatsappDrawerTone.value) {
+    case 'ok':
+      return 'check-circle-filled';
+    case 'warn':
+      return 'time-filled';
+    case 'muted':
+      return 'minus-circle-filled';
+    default:
+      return 'error-circle-filled';
+  }
+});
+
 // WeChat QR code binding state
 const wechatQRContent = ref('');  // raw text to encode as QR code
 const wechatQRImgUrl = ref('');   // generated QR image URL
@@ -720,6 +912,22 @@ const wechatQRStatus = ref<string>('');
 const wechatLoading = ref(false);
 let wechatPollActive = false;
 let wechatPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+// WhatsApp QR pairing state
+const whatsappQRImg = ref('');      // locally rendered PNG data URL from backend
+const whatsappSessionId = ref('');  // pairing session identifier for polling
+const whatsappQRStatus = ref<string>('');
+const whatsappLoading = ref(false);
+// True while re-pairing an already-bound channel: the QR flow is shown but the
+// existing device_jid stays in the form until the new pairing succeeds.
+const whatsappRepairing = ref(false);
+let whatsappPollActive = false;
+let whatsappPollTimer: ReturnType<typeof setTimeout> | null = null;
+let whatsappPollFailures = 0;
+// Consecutive poll failures tolerated before giving up (~20s at 1s cadence):
+// the session may be gone for good (5-minute pairing timeout, backend
+// restart), and polling a dead session forever shows a stale QR code.
+const WHATSAPP_POLL_MAX_FAILURES = 20;
 
 const defaultCredentials = (): Record<string, any> => ({});
 
@@ -805,6 +1013,11 @@ const wechatBound = computed(() => {
     formData.value.credentials.ilink_bot_id;
 });
 
+// Whether a WhatsApp device is already paired
+const whatsappBound = computed(() => {
+  return formData.value.platform === 'whatsapp' && !!formData.value.credentials.device_jid;
+});
+
 
 function onPlatformChange(val: string | number | boolean) {
   if (editingChannel.value) return;
@@ -814,9 +1027,18 @@ function onPlatformChange(val: string | number | boolean) {
   wechatQRImgUrl.value = '';
   wechatQRCode.value = '';
   wechatQRStatus.value = '';
+  stopWhatsAppPolling();
+  whatsappQRImg.value = '';
+  whatsappSessionId.value = '';
+  whatsappQRStatus.value = '';
   // WeChat uses fixed mode/output
   if (val === 'wechat') {
     formData.value.mode = 'longpoll';
+    formData.value.output_mode = 'full';
+  } else if (val === 'whatsapp') {
+    // Connection-based socket; no streaming (message edits are conspicuous
+    // automation on an unofficial client).
+    formData.value.mode = 'websocket';
     formData.value.output_mode = 'full';
   } else if (val === 'mattermost' || val === 'yunzhijia') {
     formData.value.mode = 'webhook';
@@ -917,6 +1139,101 @@ function stopWeChatPolling() {
   }
 }
 
+async function startWhatsAppBinding() {
+  stopWhatsAppPolling();
+  whatsappLoading.value = true;
+  whatsappQRImg.value = '';
+  whatsappQRStatus.value = '';
+  // Re-pairing keeps the existing device_jid in the form: if this attempt
+  // fails, the admin can cancel (or just save) without losing the binding.
+  whatsappRepairing.value = !!formData.value.credentials.device_jid;
+
+  try {
+    const res = await startWhatsAppPairing();
+    whatsappSessionId.value = res.data.session_id;
+    whatsappQRStatus.value = res.data.status;
+    whatsappPollFailures = 0;
+    // qr_png is rendered by the backend: the QR payload is the pairing secret
+    // and must never leave for a third-party QR image service.
+    whatsappQRImg.value = res.data.qr_png || '';
+    if (res.data.status === 'wait') {
+      whatsappPollActive = true;
+      pollWhatsAppOnce(res.data.session_id);
+    } else if (res.data.error) {
+      MessagePlugin.error(res.data.error);
+    }
+  } catch (e: any) {
+    MessagePlugin.error(e?.message || 'Failed to start WhatsApp pairing');
+    whatsappRepairing.value = false;
+  } finally {
+    whatsappLoading.value = false;
+  }
+}
+
+async function pollWhatsAppOnce(sessionId: string) {
+  // A late response from a superseded session must not touch current state
+  // (it could kill the new session's loop or leave two loops running).
+  const stale = () => !whatsappPollActive || sessionId !== whatsappSessionId.value;
+  if (stale()) return;
+  try {
+    const res = await pollWhatsAppPairing(sessionId);
+    if (stale()) return;
+    whatsappPollFailures = 0;
+    whatsappQRStatus.value = res.data.status;
+    // The QR code rotates every ~20-60s; always show the latest one
+    if (res.data.qr_png) {
+      whatsappQRImg.value = res.data.qr_png;
+    }
+
+    if (res.data.status === 'success' && res.data.credentials) {
+      formData.value.credentials = {
+        ...formData.value.credentials,
+        device_jid: res.data.credentials.device_jid,
+      };
+      whatsappRepairing.value = false;
+      stopWhatsAppPolling();
+      whatsappQRImg.value = '';
+      MessagePlugin.success(t('agentEditor.im.whatsappBindSuccess'));
+      return;
+    }
+    if (res.data.status === 'expired' || res.data.status === 'error') {
+      stopWhatsAppPolling();
+      return;
+    }
+  } catch {
+    if (stale()) return;
+    // Tolerate transient errors, but give up after a run of failures and show
+    // the expired overlay instead of polling a dead session forever.
+    whatsappPollFailures += 1;
+    if (whatsappPollFailures >= WHATSAPP_POLL_MAX_FAILURES) {
+      whatsappQRStatus.value = 'error';
+      stopWhatsAppPolling();
+      return;
+    }
+  }
+  if (!stale()) {
+    whatsappPollTimer = setTimeout(() => pollWhatsAppOnce(sessionId), 1000);
+  }
+}
+
+// Abandon an in-progress re-pairing and fall back to the existing binding.
+function cancelWhatsAppRepairing() {
+  stopWhatsAppPolling();
+  whatsappRepairing.value = false;
+  whatsappQRImg.value = '';
+  whatsappSessionId.value = '';
+  whatsappQRStatus.value = '';
+}
+
+function stopWhatsAppPolling() {
+  whatsappPollActive = false;
+  whatsappPollFailures = 0;
+  if (whatsappPollTimer) {
+    clearTimeout(whatsappPollTimer);
+    whatsappPollTimer = null;
+  }
+}
+
 async function loadChannels() {
   loading.value = true;
   try {
@@ -929,6 +1246,7 @@ async function loadChannels() {
     allChannels.value = channelRes.data || [];
     agents.value = agentRes?.data || [];
     knowledgeBases.value = chatResources.rawKnowledgeBases.map((kb: any) => ({ id: kb.id, name: kb.name }));
+    void refreshChannelStatuses();
   } catch {
     allChannels.value = [];
   } finally {
@@ -988,6 +1306,9 @@ async function editChannel(channel: IMChannel | IMChannelOverview) {
     credentials: { ...fullChannel.credentials },
   };
   normalizeYunzhijiaCredentials();
+  if (STATUS_PLATFORMS.has(fullChannel.platform)) {
+    startDrawerStatusPolling(fullChannel.id);
+  }
   showCreateDialog.value = true;
 }
 
@@ -996,11 +1317,17 @@ function resetForm() {
   editingEnabled.value = true;
   wizardStep.value = 0;
   channelNameTouched.value = false;
+  stopDrawerStatusPolling();
   stopWeChatPolling();
   wechatQRContent.value = '';
   wechatQRImgUrl.value = '';
   wechatQRCode.value = '';
   wechatQRStatus.value = '';
+  stopWhatsAppPolling();
+  whatsappQRImg.value = '';
+  whatsappSessionId.value = '';
+  whatsappQRStatus.value = '';
+  whatsappRepairing.value = false;
   formData.value = {
     target_agent_id: filterAgentId.value || '',
     platform: 'wecom',
@@ -1019,6 +1346,11 @@ async function handleSave() {
     // For WeChat, validate that credentials are bound
     if (formData.value.platform === 'wechat' && !formData.value.credentials.bot_token) {
       MessagePlugin.warning(t('agentEditor.im.wechatScanBind'));
+      return;
+    }
+    // For WhatsApp, a device must be paired before saving
+    if (formData.value.platform === 'whatsapp' && !formData.value.credentials.device_jid) {
+      MessagePlugin.warning(t('agentEditor.im.whatsappScanBind'));
       return;
     }
     if (formData.value.platform === 'yunzhijia') {
@@ -1092,6 +1424,9 @@ async function handleDelete(id: string) {
 
 onMounted(() => {
   loadChannels();
+  cardStatusTimer = setInterval(() => {
+    void refreshChannelStatuses();
+  }, CARD_STATUS_REFRESH_MS);
 });
 
 watch(filterAgentId, (id) => {
@@ -1100,8 +1435,24 @@ watch(filterAgentId, (id) => {
   }
 });
 
+// Closing the drawer via X / overlay bypasses the footer's cancel handler;
+// clean up here so QR polling loops don't keep running against an abandoned
+// pairing session in the background. resetForm is idempotent, so the save
+// and cancel paths calling it first is harmless.
+watch(showCreateDialog, (visible) => {
+  if (!visible) {
+    resetForm();
+  }
+});
+
 onUnmounted(() => {
   stopWeChatPolling();
+  stopWhatsAppPolling();
+  stopDrawerStatusPolling();
+  if (cardStatusTimer) {
+    clearInterval(cardStatusTimer);
+    cardStatusTimer = null;
+  }
 });
 </script>
 
@@ -1377,6 +1728,21 @@ onUnmounted(() => {
   }
 }
 
+// --- WhatsApp ---
+.whatsapp-risk-warning {
+  padding: 8px 12px;
+  background: var(--td-warning-color-1);
+  border: 1px solid var(--td-warning-color-3);
+  border-radius: 6px;
+  color: var(--td-warning-color-7);
+}
+
+.mono-text {
+  font-family: var(--td-font-family-medium, monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+
 // --- WeChat QR code binding ---
 .wechat-bound-status {
   display: flex;
@@ -1392,6 +1758,73 @@ onUnmounted(() => {
   .bound-icon {
     font-size: 18px;
     color: #07c160;
+  }
+
+  // Tone variants driven by the live channel status. The default (ok) look
+  // above stays green for backward compatibility with the WeChat block.
+  &--warn {
+    background: rgba(230, 162, 60, 0.08);
+    border-color: rgba(230, 162, 60, 0.3);
+
+    .bound-icon {
+      color: var(--td-warning-color, #e6a23c);
+    }
+  }
+
+  &--error {
+    background: rgba(213, 73, 65, 0.06);
+    border-color: rgba(213, 73, 65, 0.28);
+
+    .bound-icon {
+      color: var(--td-error-color, #d54941);
+    }
+  }
+
+  &--muted {
+    background: var(--td-bg-color-secondarycontainer);
+    border-color: var(--td-component-border);
+
+    .bound-icon {
+      color: var(--td-text-color-placeholder);
+    }
+  }
+}
+
+.whatsapp-status-detail {
+  margin-top: 6px;
+  color: var(--td-error-color, #d54941);
+}
+
+.channel-card__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--td-text-color-secondary);
+
+  &-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  &--ok {
+    color: #07c160;
+  }
+
+  &--warn {
+    color: var(--td-warning-color, #e6a23c);
+  }
+
+  &--error {
+    color: var(--td-error-color, #d54941);
+  }
+
+  &--muted {
+    color: var(--td-text-color-placeholder);
   }
 }
 

@@ -302,7 +302,7 @@ export interface IMChannel {
   tenant_id?: number;
   agent_id: string;
   // 'lark' is Feishu's international edition; it shares Feishu's credentials and modes.
-  platform: 'wecom' | 'feishu' | 'lark' | 'slack' | 'telegram' | 'dingtalk' | 'mattermost' | 'wechat' | 'qqbot' | 'yunzhijia';
+  platform: 'wecom' | 'feishu' | 'lark' | 'slack' | 'telegram' | 'dingtalk' | 'mattermost' | 'wechat' | 'qqbot' | 'yunzhijia' | 'whatsapp';
   name: string;
   enabled: boolean;
   mode: 'webhook' | 'websocket' | 'longpoll';
@@ -407,4 +407,46 @@ export function getWeChatQRCode() {
 
 export function pollWeChatQRCodeStatus(qrcode: string) {
   return post<{ data: WeChatQRCodeStatus }>('/api/v1/wechat/qrcode/status', { qrcode });
+}
+
+// ===== WhatsApp 扫码配对 =====
+
+// qr_png is a locally rendered PNG data URL: the QR payload is the pairing
+// secret, so it must never be sent to a third-party QR rendering service.
+export interface WhatsAppPairingStatus {
+  session_id: string;
+  status: 'wait' | 'success' | 'expired' | 'error';
+  qr_png?: string;
+  phone?: string;
+  error?: string;
+  credentials?: {
+    device_jid: string;
+  };
+}
+
+export function startWhatsAppPairing() {
+  return post<{ data: WhatsAppPairingStatus }>('/api/v1/whatsapp/qrcode');
+}
+
+export function pollWhatsAppPairing(sessionId: string) {
+  return post<{ data: WhatsAppPairingStatus }>('/api/v1/whatsapp/qrcode/status', { session_id: sessionId });
+}
+
+// ===== IM 渠道运行状态 =====
+
+// Runtime health of a channel. Long-connection platforms (WhatsApp) report
+// live connection states; the rest are synthesized server-side from durable
+// state (e.g. needs_pairing when the WhatsApp session store lost the device).
+export type IMChannelRuntimeState =
+  | 'connected' | 'connecting' | 'logged_out' | 'stream_replaced' | 'error'
+  | 'running' | 'not_running' | 'needs_pairing' | 'disabled';
+
+export interface IMChannelRuntimeStatus {
+  state: IMChannelRuntimeState;
+  detail?: string;
+  since?: string;
+}
+
+export function getIMChannelStatus(channelId: string) {
+  return get<{ data: IMChannelRuntimeStatus }>(`/api/v1/im-channels/${channelId}/status`);
 }
