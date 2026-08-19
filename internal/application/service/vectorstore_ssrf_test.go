@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -17,11 +16,8 @@ import (
 func withSSRFWhitelist(t *testing.T, whitelist string) {
 	t.Helper()
 	utils.ResetSSRFWhitelistForTest()
-	require.NoError(t, os.Setenv("SSRF_WHITELIST", whitelist))
-	t.Cleanup(func() {
-		_ = os.Unsetenv("SSRF_WHITELIST")
-		utils.ResetSSRFWhitelistForTest()
-	})
+	t.Setenv("SSRF_WHITELIST", whitelist)
+	t.Cleanup(utils.ResetSSRFWhitelistForTest)
 }
 
 func TestValidateConnectionAddrSSRF(t *testing.T) {
