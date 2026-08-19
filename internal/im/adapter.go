@@ -3,6 +3,7 @@ package im
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,6 +24,10 @@ const (
 	PlatformWeChat     Platform = "wechat"
 	PlatformQQBot      Platform = "qqbot"
 	PlatformYunzhijia  Platform = "yunzhijia"
+	// PlatformWhatsApp links a regular WhatsApp account as a companion
+	// device via the WhatsApp Web multidevice protocol (whatsmeow), not the
+	// official Cloud API.
+	PlatformWhatsApp Platform = "whatsapp"
 )
 
 // SessionMode determines how IM sessions are resolved.
@@ -170,4 +175,52 @@ type FileDownloader interface {
 	// DownloadFile downloads a file resource from the IM platform.
 	// Returns the file content reader, the resolved file name, and any error.
 	DownloadFile(ctx context.Context, msg *IncomingMessage) (io.ReadCloser, string, error)
+}
+
+// ── Channel runtime status ──
+
+// Channel runtime states. The first group is reported live by StatusReporter
+// adapters; the second is synthesized by the service/handler layer when no
+// instance holds a live runtime for the channel.
+const (
+	// ChannelStateConnected: the long connection is up and authenticated.
+	ChannelStateConnected = "connected"
+	// ChannelStateConnecting: connecting or auto-reconnecting (transient).
+	ChannelStateConnecting = "connecting"
+	// ChannelStateLoggedOut: the platform revoked the session (e.g. the
+	// WhatsApp device was unlinked from the phone); re-pairing is required.
+	ChannelStateLoggedOut = "logged_out"
+	// ChannelStateStreamReplaced: another client connected with the same
+	// session and took over the connection.
+	ChannelStateStreamReplaced = "stream_replaced"
+	// ChannelStateError: terminal platform error (temporary ban, outdated
+	// client, …) described by Detail.
+	ChannelStateError = "error"
+
+	// ChannelStateRunning: the adapter is registered but has no live
+	// connection to report on (webhook platforms).
+	ChannelStateRunning = "running"
+	// ChannelStateNotRunning: the channel is enabled but no instance holds a
+	// runtime for it (start failure or a leadership gap).
+	ChannelStateNotRunning = "not_running"
+	// ChannelStateNeedsPairing: no usable pairing credentials exist; an admin
+	// must (re-)scan the QR code.
+	ChannelStateNeedsPairing = "needs_pairing"
+	// ChannelStateDisabled: the channel row is disabled.
+	ChannelStateDisabled = "disabled"
+)
+
+// ChannelStatus is a point-in-time health snapshot of a channel runtime.
+type ChannelStatus struct {
+	State  string    `json:"state"`
+	Detail string    `json:"detail,omitempty"`
+	Since  time.Time `json:"since,omitzero"`
+}
+
+// StatusReporter is an optional interface for long-connection adapters that
+// can report live connection health (e.g. WhatsApp). Webhook adapters have no
+// meaningful live state and simply don't implement it.
+type StatusReporter interface {
+	// ChannelStatus returns the current connection-state snapshot.
+	ChannelStatus() ChannelStatus
 }

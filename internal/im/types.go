@@ -39,27 +39,31 @@ func (IMChannel) TableName() string {
 
 // IMChannelSummary is the HTTP-safe list shape for IM channels. Credentials
 // are never included — use Admin+ Create/Update responses to read back
-// values immediately after a mutation.
+// values immediately after a mutation. WhatsApp is the one exception: its
+// credentials (device_jid, allow_from) carry no secret — the session keys
+// live in whatsmeow's own tables — and the edit form needs them back to
+// show the bound state and allowlist without forcing a re-pair.
 type IMChannelSummary struct {
-	ID                    string    `json:"id"`
-	TenantID              uint64    `json:"tenant_id"`
-	AgentID               string    `json:"agent_id"`
-	Platform              string    `json:"platform"`
-	Name                  string    `json:"name"`
-	Enabled               bool      `json:"enabled"`
-	Mode                  string    `json:"mode"`
-	OutputMode            string    `json:"output_mode"`
-	KnowledgeBaseID       string    `json:"knowledge_base_id"`
-	BotIdentity           string    `json:"bot_identity"`
-	SessionMode           string    `json:"session_mode"`
-	CredentialsConfigured bool      `json:"credentials_configured"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	ID                    string     `json:"id"`
+	TenantID              uint64     `json:"tenant_id"`
+	AgentID               string     `json:"agent_id"`
+	Platform              string     `json:"platform"`
+	Name                  string     `json:"name"`
+	Enabled               bool       `json:"enabled"`
+	Mode                  string     `json:"mode"`
+	OutputMode            string     `json:"output_mode"`
+	KnowledgeBaseID       string     `json:"knowledge_base_id"`
+	BotIdentity           string     `json:"bot_identity"`
+	SessionMode           string     `json:"session_mode"`
+	CredentialsConfigured bool       `json:"credentials_configured"`
+	Credentials           types.JSON `json:"credentials,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 // SummarizeIMChannel converts a stored channel into its list response shape.
 func SummarizeIMChannel(ch IMChannel) IMChannelSummary {
-	return IMChannelSummary{
+	summary := IMChannelSummary{
 		ID:                    ch.ID,
 		TenantID:              ch.TenantID,
 		AgentID:               ch.AgentID,
@@ -75,6 +79,10 @@ func SummarizeIMChannel(ch IMChannel) IMChannelSummary {
 		CreatedAt:             ch.CreatedAt,
 		UpdatedAt:             ch.UpdatedAt,
 	}
+	if ch.Platform == string(PlatformWhatsApp) {
+		summary.Credentials = ch.Credentials
+	}
+	return summary
 }
 
 // SummarizeIMChannels converts stored channels into list response shapes.
@@ -201,6 +209,17 @@ func (ch *IMChannel) computeBotIdentity() string {
 	case "qqbot":
 		if appID := str("app_id"); appID != "" {
 			return "qqbot:" + appID
+		}
+	case "whatsapp":
+		// device_jid looks like "8613800138000:12@s.whatsapp.net"; the user
+		// part (phone number) is stable across re-pairings while the device
+		// index changes, so key on the phone number only.
+		if deviceJID := str("device_jid"); deviceJID != "" {
+			phone := deviceJID
+			if idx := strings.IndexAny(phone, ":@"); idx > 0 {
+				phone = phone[:idx]
+			}
+			return "whatsapp:" + phone
 		}
 	case "yunzhijia":
 		if sendMsgURL := str("send_msg_url"); sendMsgURL != "" {

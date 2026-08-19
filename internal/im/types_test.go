@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"gorm.io/gorm"
+
+	"github.com/Tencent/WeKnora/internal/types"
 )
 
 func TestValidateSessionMode(t *testing.T) {
@@ -162,6 +164,26 @@ func TestComputeBotIdentity_LarkWithoutAppID(t *testing.T) {
 	}
 }
 
+// The WhatsApp device index (":12") changes on every re-pairing while the
+// phone number stays put, so identity must key on the phone number only —
+// otherwise re-scanning the QR code would bypass duplicate detection.
+func TestComputeBotIdentity_WhatsAppUsesPhoneOnly(t *testing.T) {
+	first := &IMChannel{Platform: "whatsapp", Credentials: []byte(`{"device_jid":"8613800138000:12@s.whatsapp.net"}`)}
+	rePaired := &IMChannel{Platform: "whatsapp", Credentials: []byte(`{"device_jid":"8613800138000:13@s.whatsapp.net"}`)}
+
+	if got := first.computeBotIdentity(); got != "whatsapp:8613800138000" {
+		t.Errorf("identity = %q, want %q", got, "whatsapp:8613800138000")
+	}
+	if first.computeBotIdentity() != rePaired.computeBotIdentity() {
+		t.Error("re-paired device must keep the same identity")
+	}
+
+	empty := &IMChannel{Platform: "whatsapp", Credentials: []byte(`{"allow_from":"*"}`)}
+	if got := empty.computeBotIdentity(); got != "" {
+		t.Errorf("identity = %q, want empty when device_jid is missing", got)
+	}
+}
+
 func TestIMChannelComputeBotIdentity_YunzhijiaUsesYZJToken(t *testing.T) {
 	makeChannel := func(sendMsgURL string) *IMChannel {
 		return &IMChannel{
@@ -219,5 +241,57 @@ func TestChannelSessionThreadIDField(t *testing.T) {
 	}
 	if csUser.ThreadID != "" {
 		t.Errorf("ThreadID = %q, want empty", csUser.ThreadID)
+	}
+}
+
+func TestMergeUpdatedCredentials(t *testing.T) {
+	old := types.JSON(`{"device_jid":"555:11@s.whatsapp.net","allow_from":"111"}`)
+
+	// Empty-ish updates keep the stored credentials on every platform.
+	for _, empty := range []string{"", "{}", "null", "  "} {
+		if got := MergeUpdatedCredentials("wecom", old, types.JSON(empty)); string(got) != string(old) {
+			t.Errorf("empty update %q replaced credentials: got %s", empty, got)
+		}
+	}
+
+	// Non-whatsapp platforms replace wholesale.
+	next := types.JSON(`{"bot_token":"tok"}`)
+	if got := MergeUpdatedCredentials("slack", old, next); string(got) != string(next) {
+		t.Errorf("slack update = %s, want %s", got, next)
+	}
+
+	// WhatsApp update without device_jid inherits it from the stored value.
+	merged := MergeUpdatedCredentials("whatsapp", old, types.JSON(`{"allow_from":"222"}`))
+	m, err := ParseCredentials(merged)
+	if err != nil {
+		t.Fatalf("merged credentials unparsable: %v", err)
+	}
+	if GetString(m, "device_jid") != "555:11@s.whatsapp.net" || GetString(m, "allow_from") != "222" {
+		t.Errorf("merged = %s, want inherited device_jid and new allow_from", merged)
+	}
+
+	// WhatsApp update with an explicit device_jid wins (re-pair flow).
+	repaired := types.JSON(`{"device_jid":"555:12@s.whatsapp.net","allow_from":"222"}`)
+	if got := MergeUpdatedCredentials("whatsapp", old, repaired); string(got) != string(repaired) {
+		t.Errorf("re-pair update = %s, want %s", got, repaired)
+	}
+
+	// Nothing stored to inherit: update passes through unchanged.
+	got := MergeUpdatedCredentials("whatsapp", types.JSON(`{}`), types.JSON(`{"allow_from":"222"}`))
+	gm, err := ParseCredentials(got)
+	if err != nil || GetString(gm, "device_jid") != "" {
+		t.Errorf("unexpected device_jid in %s (err=%v)", got, err)
+	}
+}
+
+func TestSummarizeIMChannelCredentialsExposure(t *testing.T) {
+	wa := IMChannel{Platform: "whatsapp", Credentials: types.JSON(`{"device_jid":"555:11@s.whatsapp.net"}`)}
+	if got := SummarizeIMChannel(wa).Credentials; len(got) == 0 {
+		t.Error("whatsapp summary must include credentials for the edit form")
+	}
+
+	slack := IMChannel{Platform: "slack", Credentials: types.JSON(`{"bot_token":"secret"}`)}
+	if got := SummarizeIMChannel(slack).Credentials; len(got) != 0 {
+		t.Errorf("slack summary leaked credentials: %s", got)
 	}
 }

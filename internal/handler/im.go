@@ -8,16 +8,18 @@ import (
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/im"
+	"github.com/Tencent/WeKnora/internal/im/whatsapp"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
 // validIMPlatforms is the set of supported IM platforms.
 var validIMPlatforms = map[string]bool{
 	"wecom": true, "feishu": true, "lark": true, "slack": true, "telegram": true, "dingtalk": true,
-	"mattermost": true, "wechat": true, "qqbot": true, "yunzhijia": true,
+	"mattermost": true, "wechat": true, "qqbot": true, "yunzhijia": true, "whatsapp": true,
 }
 
 // invalidIMPlatformError is the 400 message listing the accepted platforms. It
@@ -34,13 +36,34 @@ var invalidIMPlatformError = func() string {
 
 // IMHandler handles IM platform callback requests and channel CRUD.
 type IMHandler struct {
-	imService *im.Service
+	imService       *im.Service
+	whatsappPairing *whatsapp.PairingService
+	// db backs durable status probes (e.g. whatsmeow device existence) for
+	// channels that have no live runtime to ask.
+	db *gorm.DB
 }
 
 // NewIMHandler creates a new IM handler.
-func NewIMHandler(imService *im.Service) *IMHandler {
+func NewIMHandler(imService *im.Service, db *gorm.DB, redisClient *redis.Client) *IMHandler {
 	return &IMHandler{
-		imService: imService,
+		imService:       imService,
+		whatsappPairing: whatsapp.NewPairingService(db, redisClient),
+		db:              db,
+	}
+}
+
+// enforcePlatformFixedModes pins mode/output_mode for platforms whose
+// transport is not user-selectable (wechat: long-poll only; whatsapp:
+// leader-elected websocket with full output). Create and Update both apply
+// it so the invariant cannot be bypassed by a later PUT.
+func enforcePlatformFixedModes(channel *im.IMChannel) {
+	switch channel.Platform {
+	case "wechat":
+		channel.Mode = "longpoll"
+		channel.OutputMode = "full"
+	case "whatsapp":
+		channel.Mode = "websocket"
+		channel.OutputMode = "full"
 	}
 }
 
@@ -95,10 +118,11 @@ func (h *IMHandler) CreateIMChannel(c *gin.Context) {
 	if req.Enabled != nil {
 		channel.Enabled = *req.Enabled
 	}
-	// WeChat uses long-polling mode and full output only
-	if req.Platform == "wechat" {
-		channel.Mode = "longpoll"
-		channel.OutputMode = "full"
+	// WeChat only works over long-polling; WhatsApp is connection-based
+	// (leader-elected socket) and does not stream: frequent message edits
+	// are conspicuous automation on an unofficial client.
+	if req.Platform == "wechat" || req.Platform == "whatsapp" {
+		enforcePlatformFixedModes(channel)
 	} else {
 		if channel.Mode == "" {
 			if channel.Platform == "mattermost" || channel.Platform == "yunzhijia" {
@@ -229,6 +253,11 @@ func (h *IMHandler) UpdateIMChannel(c *gin.Context) {
 	if req.OutputMode != nil {
 		channel.OutputMode = *req.OutputMode
 	}
+	// Platform-fixed transports must survive updates too, or a PUT could flip
+	// e.g. whatsapp to "webhook": the factory would still open its socket on
+	// every replica (webhook mode skips leader election), and concurrent
+	// connections with one WhatsApp session corrupt its Signal state.
+	enforcePlatformFixedModes(channel)
 	if req.SessionMode != nil {
 		channel.SessionMode = *req.SessionMode
 	}
@@ -236,7 +265,7 @@ func (h *IMHandler) UpdateIMChannel(c *gin.Context) {
 		channel.KnowledgeBaseID = *req.KnowledgeBaseID
 	}
 	if req.Credentials != nil {
-		channel.Credentials = req.Credentials
+		channel.Credentials = im.MergeUpdatedCredentials(channel.Platform, channel.Credentials, req.Credentials)
 	}
 	if req.Enabled != nil {
 		channel.Enabled = *req.Enabled

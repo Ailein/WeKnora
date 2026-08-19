@@ -46,8 +46,11 @@ const (
 	maxContentLength = 4096
 	// maxQuoteContentLength is the max runes to include from a quoted message.
 	maxQuoteContentLength = 500
-	// maxIMAttachmentBytes bounds an attachment buffered for IM Q&A.
-	maxIMAttachmentBytes = 32 << 20 // 32 MiB
+	// MaxIMAttachmentBytes bounds an attachment buffered for IM Q&A. Exported
+	// so connection-based adapters (whatsapp) can enforce the same cap on the
+	// bytes actually downloaded — the sender-declared size is untrusted.
+	MaxIMAttachmentBytes = 32 << 20 // 32 MiB
+	maxIMAttachmentBytes = MaxIMAttachmentBytes
 	// maxIMVisionAttachmentBytes prevents large images from expanding into an oversized data URI.
 	maxIMVisionAttachmentBytes = 8 << 20 // 8 MiB
 	// maxIMAttachmentLines matches the legacy attachment prompt limit.
@@ -188,6 +191,11 @@ const (
 	wsLeaderRenewInterval = 5 * time.Second
 	// wsLeaderRetryInterval is how often non-leader instances try to acquire the lock.
 	wsLeaderRetryInterval = 10 * time.Second
+	// channelStatusTTL bounds the Redis channel-status mirror. It outlives a
+	// few missed leader renewals but goes stale quickly once the leader dies.
+	channelStatusTTL = 3 * wsLeaderRenewInterval
+	// channelStatusOpTimeout bounds each best-effort status mirror operation.
+	channelStatusOpTimeout = 3 * time.Second
 	// stopMarkerTTL is the TTL for cross-instance /stop markers in Redis.
 	stopMarkerTTL = 30 * time.Second
 	// stopPollInterval is how often in-flight workers check for remote /stop signals.
@@ -208,6 +216,10 @@ const (
 	// RedisChannelConfig broadcasts durable im_channels mutations so every
 	// application replica invalidates its local adapter/config snapshot.
 	RedisChannelConfig = "im:channel:config"
+	// RedisKeyChannelStatus mirrors the live connection status of a channel
+	// (+ channelID) so replicas that don't own the long connection can still
+	// answer status queries.
+	RedisKeyChannelStatus = "im:channel:status:"
 
 	defaultRateLimitWindow      = 60 * time.Second
 	defaultRateLimitMaxRequests = 10
@@ -286,7 +298,11 @@ type Service struct {
 	// channels maps channel ID -> running channel state
 	channels      map[string]*channelState
 	leaderRetries map[string]*leaderRetryState
-	mu            sync.RWMutex
+	// lastStartErrors records the most recent adapter start failure per
+	// channel so the status API can explain why an enabled channel is not
+	// running. Cleared on successful start and on stop.
+	lastStartErrors map[string]string
+	mu              sync.RWMutex
 
 	// adapterFactories maps platform name -> factory function
 	adapterFactories map[string]AdapterFactory
@@ -839,6 +855,7 @@ func NewService(
 		cmdRegistry:      registry,
 		channels:         make(map[string]*channelState),
 		leaderRetries:    make(map[string]*leaderRetryState),
+		lastStartErrors:  make(map[string]string),
 		adapterFactories: make(map[string]AdapterFactory),
 		rateLimiter:      ratelimit.New(redisClient, RedisKeyRateLimit, rlWindow, instanceID),
 		rateLimitMax:     rlMax,
@@ -1065,6 +1082,7 @@ func (s *Service) StartChannel(channel *IMChannel) error {
 	s.stopLeaderRetryLocked(channel.ID)
 	factory, ok := s.adapterFactories[channel.Platform]
 	if !ok {
+		s.lastStartErrors[channel.ID] = "no adapter factory for platform: " + channel.Platform
 		s.mu.Unlock()
 		return fmt.Errorf("no adapter factory for platform: %s", channel.Platform)
 	}
@@ -1100,6 +1118,9 @@ func (s *Service) startChannelInternal(channel *IMChannel, factory AdapterFactor
 	ctx := context.Background()
 	adapter, cancelFn, err := factory(ctx, channel, msgHandler)
 	if err != nil {
+		s.mu.Lock()
+		s.lastStartErrors[channel.ID] = "create adapter: " + err.Error()
+		s.mu.Unlock()
 		s.releaseWSLeader(channel.ID) // release lock on failure
 		return fmt.Errorf("create adapter: %w", err)
 	}
@@ -1139,7 +1160,12 @@ func (s *Service) startChannelInternal(channel *IMChannel, factory AdapterFactor
 		Cancel:       cancelFn,
 		leaderCancel: leaderCancel,
 	}
+	delete(s.lastStartErrors, channel.ID)
 	s.mu.Unlock()
+
+	// Publish an initial status snapshot so other replicas can answer status
+	// queries before the first leader renewal tick refreshes it.
+	go s.mirrorChannelStatus(channel.ID)
 
 	return nil
 }
@@ -1244,6 +1270,9 @@ func (s *Service) wsLeaderRenewLoop(ctx context.Context, channelID string) {
 				s.handleWSLeadershipLoss(channelID)
 				return
 			}
+			// Piggyback the status mirror on the renewal heartbeat so other
+			// replicas can answer status queries for this channel.
+			s.mirrorChannelStatus(channelID)
 			// Still the leader — verify the channel is still active. A
 			// delete/disable is served by whichever instance got the HTTP
 			// request; without this check the leader would keep the long
@@ -1516,6 +1545,80 @@ func (s *Service) GetChannelAdapter(channelID string) (Adapter, *IMChannel, bool
 		return nil, nil, false
 	}
 	return cs.Adapter, cs.Channel, true
+}
+
+// ── Channel runtime status ──────────────────────────────────────────────────
+
+// ChannelRuntimeStatus returns the live status of a channel runtime: the
+// local adapter when this instance owns it, otherwise the Redis mirror
+// written by whichever replica does. ok=false means no live runtime was found
+// anywhere; callers should synthesize an answer from durable state.
+func (s *Service) ChannelRuntimeStatus(channelID string) (*ChannelStatus, bool) {
+	adapter, _, running := s.GetChannelAdapter(channelID)
+	if running {
+		if reporter, ok := adapter.(StatusReporter); ok {
+			st := reporter.ChannelStatus()
+			return &st, true
+		}
+		// Webhook adapters have no live connection to report on; registered
+		// means ready to serve callbacks.
+		return &ChannelStatus{State: ChannelStateRunning}, true
+	}
+	return s.lookupChannelStatusMirror(channelID)
+}
+
+// LastStartError returns the most recent start failure recorded for a
+// channel, or "" if the last start succeeded (or none was attempted here).
+func (s *Service) LastStartError(channelID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastStartErrors[channelID]
+}
+
+// mirrorChannelStatus publishes the local adapter's status snapshot to Redis.
+// Best-effort, like the pairing-session mirror: without Redis the deployment
+// is single-instance and local lookups already see the adapter. Stale entries
+// expire via TTL rather than explicit deletes, so a brief leadership handover
+// can serve an old snapshot for at most channelStatusTTL.
+func (s *Service) mirrorChannelStatus(channelID string) {
+	if s.redis == nil {
+		return
+	}
+	adapter, _, running := s.GetChannelAdapter(channelID)
+	if !running {
+		return
+	}
+	reporter, ok := adapter.(StatusReporter)
+	if !ok {
+		return
+	}
+	st := reporter.ChannelStatus()
+	payload, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), channelStatusOpTimeout)
+	defer cancel()
+	if err := s.redis.Set(ctx, RedisKeyChannelStatus+channelID, payload, channelStatusTTL).Err(); err != nil {
+		logger.Warnf(ctx, "[IM] Mirror channel status %s to redis failed: %v", channelID, err)
+	}
+}
+
+func (s *Service) lookupChannelStatusMirror(channelID string) (*ChannelStatus, bool) {
+	if s.redis == nil {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), channelStatusOpTimeout)
+	defer cancel()
+	payload, err := s.redis.Get(ctx, RedisKeyChannelStatus+channelID).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	st := &ChannelStatus{}
+	if err := json.Unmarshal(payload, st); err != nil {
+		return nil, false
+	}
+	return st, true
 }
 
 // EnsureChannelAdapter loads the durable channel row before serving a webhook

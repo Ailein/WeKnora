@@ -294,6 +294,7 @@ func RegisterIMChannelRoutes(r *gin.RouterGroup, imHandler *handler.IMHandler, g
 	channels := g.apiKeyGroup(r.Group("/im-channels"), apiKeyManageChannels(apiKeyFullAccess()))
 	{
 		channels.GET("", g.Viewer(), imHandler.ListAllIMChannels)
+		channels.GET("/:id/status", g.Viewer(), imHandler.GetIMChannelStatus)
 		channels.PUT("/:id", g.Admin(), imHandler.UpdateIMChannel)
 		channels.DELETE("/:id", g.Admin(), imHandler.DeleteIMChannel)
 		channels.POST("/:id/toggle", g.Admin(), imHandler.ToggleIMChannel)
@@ -305,6 +306,14 @@ func RegisterIMChannelRoutes(r *gin.RouterGroup, imHandler *handler.IMHandler, g
 	{
 		wechatGroup.POST("/qrcode", g.Admin(), imHandler.WeChatGetQRCode)
 		wechatGroup.POST("/qrcode/status", g.Admin(), imHandler.WeChatPollQRCodeStatus)
+	}
+
+	// WhatsApp QR pairing (requires authentication) — Admin+: a successful
+	// scan links a personal WhatsApp account as a companion device.
+	whatsappGroup := g.apiKeyGroup(r.Group("/whatsapp"), apiKeyManageChannels(apiKeyFullAccess()))
+	{
+		whatsappGroup.POST("/qrcode", g.Admin(), imHandler.WhatsAppStartPairing)
+		whatsappGroup.POST("/qrcode/status", g.Admin(), imHandler.WhatsAppPollPairing)
 	}
 }
 

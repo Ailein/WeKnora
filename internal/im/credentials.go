@@ -3,6 +3,8 @@ package im
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/Tencent/WeKnora/internal/types"
 )
 
 // ParseCredentials parses the JSONB credentials field into a map.
@@ -25,6 +27,37 @@ func GetString(creds map[string]any, key string) string {
 		}
 	}
 	return ""
+}
+
+// MergeUpdatedCredentials decides what an update request should persist as
+// the channel credentials. List responses redact credentials, so an edit
+// form may legitimately send back an empty object — treat that as "not
+// provided" and keep the stored value instead of wiping it. For WhatsApp,
+// device_jid is additionally inherited from the stored credentials when the
+// update omits it, so editing e.g. allow_from can never unbind the device.
+func MergeUpdatedCredentials(platform string, oldCred, newCred types.JSON) types.JSON {
+	s := strings.TrimSpace(string(newCred))
+	if s == "" || s == "{}" || s == "null" {
+		return oldCred
+	}
+	if platform != string(PlatformWhatsApp) {
+		return newCred
+	}
+	newMap, err := ParseCredentials(newCred)
+	if err != nil || newMap == nil || GetString(newMap, "device_jid") != "" {
+		return newCred
+	}
+	oldMap, err := ParseCredentials(oldCred)
+	if err != nil {
+		return newCred
+	}
+	if jid := GetString(oldMap, "device_jid"); jid != "" {
+		newMap["device_jid"] = jid
+		if merged, err := json.Marshal(newMap); err == nil {
+			return types.JSON(merged)
+		}
+	}
+	return newCred
 }
 
 // GetBool reads a boolean from JSON credentials (bool, string "true"/"1", or non-zero number).
