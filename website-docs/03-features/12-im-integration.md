@@ -12,7 +12,7 @@
 用户在群里还能直接发文件给机器人入库，机器人也支持 `/help` 之类的内置命令，细节见下文。相关代码：
 
 - 核心框架与编排：`internal/im/`（`adapter.go`、`service.go`、`supervisor.go`、`command*.go`、`qaqueue.go`、`session/stream/think/tool_display` 等）
-- 各平台适配器：`internal/im/{wecom,feishu,dingtalk,slack,telegram,mattermost,wechat,qqbot,yunzhijia}/`
+- 各平台适配器：`internal/im/{wecom,feishu,dingtalk,slack,telegram,mattermost,wechat,qqbot,yunzhijia,whatsapp}/`
 - HTTP 接口层：`internal/handler/im.go`
 - 路由：`internal/router/router.go` 的 `RegisterIMRoutes` / `RegisterIMChannelRoutes`
 
@@ -66,11 +66,12 @@ imService.RegisterAdapterFactory("mattermost", mattermost.NewFactory())
 imService.RegisterAdapterFactory("wechat", wechat.NewFactory())
 imService.RegisterAdapterFactory("qqbot", qqbot.NewFactory())
 imService.RegisterAdapterFactory("yunzhijia", yunzhijia.NewFactory())
+imService.RegisterAdapterFactory("whatsapp", whatsapp.NewFactory(db)) // 需要 DB：whatsmeow 会话存主库 whatsmeow_* 表
 ```
 
 ## 支持的平台与能力对比
 
-`internal/handler/im.go` 中 `validIMPlatforms` 定义了 10 个合法平台。各平台能力（以各 `factory.go` 与 adapter 编译期断言为准）：
+`internal/handler/im.go` 中 `validIMPlatforms` 定义了 11 个合法平台。各平台能力（以各 `factory.go` 与 adapter 编译期断言为准）：
 
 | 平台 | 接入模式（默认加粗） | 流式回复 StreamSender | 文件下载 FileDownloader | 线程/话题 ThreadID | 主要凭据字段（credentials JSON） |
 | --- | --- | --- | --- | --- | --- |
@@ -84,6 +85,7 @@ imService.RegisterAdapterFactory("yunzhijia", yunzhijia.NewFactory())
 | 微信 `wechat`（iLink 机器人） | **longpoll**（强制；创建时后端强制 `mode=longpoll`、`output_mode=full`） | 否（仅整段输出） | 是 | 否 | `bot_token`、`ilink_bot_id`（均必填） |
 | QQ 机器人 `qqbot` | **websocket**（仅支持） | 否 | 否 | 否 | `app_id`、`client_secret`、`api_base_url`、`gateway_url` |
 | 云之家 `yunzhijia` | **webhook** / websocket（从 `send_msg_url` 推导 WS 地址） | 否 | 是 | 否 | `send_msg_url`（必填）、`secret`、`app_id`、`app_secret`、`allowed_webhook_host_suffix`、`timeout_seconds` |
+| WhatsApp `whatsapp` | **websocket**（强制；whatsmeow 长连接，WhatsApp Web 多设备协议扫码配对，创建时后端强制 `output_mode=full`） | 否（消息高频编辑在非官方客户端上过于显眼） | 是（图片/文档） | 否 | `device_jid`（扫码配对后回填，必填）、`allow_from`（私聊白名单，逗号分隔号码，`*` 放行所有，留空拒绝全部私聊；群聊需 @机器人或回复机器人消息） |
 
 ## 渠道模型与配置（internal/im/types.go）
 
@@ -92,7 +94,7 @@ imService.RegisterAdapterFactory("yunzhijia", yunzhijia.NewFactory())
 | 字段 | 说明 |
 | --- | --- |
 | `AgentID` | 绑定的自定义智能体；回答走该 Agent 的配置（模型、知识库、Skills、MCP、联网搜索） |
-| `Platform` / `Mode` | 平台与接入模式。默认值：mattermost/yunzhijia → `webhook`，wechat → `longpoll`（且强制 `output_mode=full`），其余 → `websocket` |
+| `Platform` / `Mode` | 平台与接入模式。默认值：mattermost/yunzhijia → `webhook`，wechat → `longpoll`（且强制 `output_mode=full`），whatsapp → `websocket`（且强制 `output_mode=full`），其余 → `websocket` |
 | `OutputMode` | `stream`（默认，流式）或 `full`（等完整答案后一次性回复） |
 | `KnowledgeBaseID` | 可选"文件知识库"。无论是否配置，文件/图片都会下载后供 QA 理解；配置后会额外在后台入库（见下文） |
 | `SessionMode` | `user`（默认，按 平台+用户+群 维度映射会话）或 `thread`（按 平台+线程+群 维度，每个顶层消息开新会话） |
