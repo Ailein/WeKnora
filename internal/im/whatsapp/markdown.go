@@ -66,8 +66,14 @@ func toWhatsAppMarkup(text string) string {
 		var codeSpans []string
 		line, codeSpans = protectInlineCode(line)
 		if m := mdHeading.FindStringSubmatch(line); m != nil {
-			line = "*" + strings.TrimSpace(restoreInlineCode(m[1], codeSpans)) + "*"
-			out = append(out, line)
+			// The whole heading becomes one bold line, so nested bold markers
+			// are stripped rather than converted — "*a *b* c*" renders as
+			// literal asterisks on WhatsApp. Strike and links convert as usual.
+			inner := mdBoldStars.ReplaceAllString(m[1], "$1")
+			inner = mdBoldUnderscore.ReplaceAllString(inner, "$1")
+			inner = mdStrike.ReplaceAllString(inner, "~$1~")
+			inner = mdLink.ReplaceAllString(inner, "$1 ($2)")
+			out = append(out, "*"+strings.TrimSpace(restoreInlineCode(inner, codeSpans))+"*")
 			continue
 		}
 		line = mdBoldStars.ReplaceAllString(line, "*$1*")

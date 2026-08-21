@@ -21,6 +21,11 @@ func TestToWhatsAppMarkup(t *testing.T) {
 		{"inline code with strike/link", "run `~~x~~` and `[a](b)` please", "run `~~x~~` and `[a](b)` please"},
 		{"bold outside inline code", "**bold** and `**code**`", "*bold* and `**code**`"},
 		{"inline code in heading", "## Use `**kwargs` here", "*Use `**kwargs` here*"},
+		// The heading itself becomes the bold span; nested bold markers must
+		// be stripped, not converted, or WhatsApp shows literal asterisks.
+		{"bold inside heading stripped", "## **Bold** title", "*Bold title*"},
+		{"link inside heading", "## See [docs](https://example.com)", "*See docs (https://example.com)*"},
+		{"strike inside heading", "## ~~Old~~ New", "*~Old~ New*"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
