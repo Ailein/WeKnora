@@ -5420,6 +5420,7 @@ export default {
       whatsappScanBind: 'Scan to pair WhatsApp',
       whatsappScanning: 'On your phone open WhatsApp → Settings → Linked devices → Link a device, then scan this code',
       whatsappBindSuccess: 'WhatsApp paired successfully',
+      whatsappPairedUnsaved: 'Paired — save to apply',
       whatsappRebind: 'Re-pair',
       whatsappHint: 'Links a regular WhatsApp account as a companion device via the WhatsApp Web multidevice protocol (QR pairing, no official Cloud API).',
       whatsappRiskWarning: 'Unofficial integration: automating a personal account violates WhatsApp Terms of Service and carries a real risk of account bans. Use a dedicated phone number.',

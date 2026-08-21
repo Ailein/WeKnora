@@ -1016,6 +1016,7 @@ export default {
       whatsappScanBind: '扫码配对 WhatsApp',
       whatsappScanning: '打开手机 WhatsApp → 设置 → 已关联的设备 → 关联设备，扫描此二维码',
       whatsappBindSuccess: 'WhatsApp 配对成功',
+      whatsappPairedUnsaved: '配对成功，保存后生效',
       whatsappRebind: '重新配对',
       whatsappHint: '通过 WhatsApp Web 多设备协议将普通 WhatsApp 账号作为伴随设备接入（扫码配对，非官方 Cloud API）。',
       whatsappRiskWarning: '非官方接入方式：自动化操作个人账号违反 WhatsApp 服务条款，存在账号被封禁的真实风险，建议使用专用手机号。',

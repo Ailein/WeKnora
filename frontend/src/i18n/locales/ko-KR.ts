@@ -1014,6 +1014,7 @@ export default {
       whatsappScanBind: 'QR 스캔으로 WhatsApp 페어링',
       whatsappScanning: '휴대폰 WhatsApp → 설정 → 연결된 기기 → 기기 연결에서 이 QR 코드를 스캔하세요',
       whatsappBindSuccess: 'WhatsApp 페어링 성공',
+      whatsappPairedUnsaved: '페어링 완료 — 저장 후 적용됩니다',
       whatsappRebind: '다시 페어링',
       whatsappHint: 'WhatsApp Web 멀티디바이스 프로토콜로 일반 WhatsApp 계정을 보조 기기로 연결합니다(QR 페어링, 공식 Cloud API 아님).',
       whatsappRiskWarning: '비공식 연동 방식: 개인 계정 자동화는 WhatsApp 서비스 약관 위반이며 계정 정지 위험이 있습니다. 전용 번호 사용을 권장합니다.',

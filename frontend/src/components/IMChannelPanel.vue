@@ -879,18 +879,33 @@ function stopDrawerStatusPolling() {
   drawerStatus.value = null;
 }
 
+// A pairing that succeeded in this drawer but is not saved yet: the status
+// poll still reflects the channel's stored (old) device, so its needs_pairing
+// error would contradict the "paired" toast the admin just saw. Detected as
+// "form JID differs from the stored channel JID" — device IDs increment on
+// every pairing, so a re-pair never reproduces the old JID.
+const whatsappUnsavedPairing = computed(() =>
+  formData.value.platform === 'whatsapp' &&
+  !!formData.value.credentials.device_jid &&
+  formData.value.credentials.device_jid !== (editingChannel.value?.credentials?.device_jid || ''),
+);
+
 // Drawer badge for an already-paired WhatsApp channel. Until the first status
-// response arrives (or for a freshly paired, unsaved channel) fall back to the
-// plain "paired" look rather than flashing an error state.
-const whatsappDrawerTone = computed<StatusTone>(() =>
-  drawerStatus.value ? statusTone(drawerStatus.value.state) : 'ok',
-);
-const whatsappDrawerText = computed(() =>
-  drawerStatus.value ? statusText(drawerStatus.value.state) : t('agentEditor.im.whatsappBindSuccess'),
-);
-const whatsappNeedsRepair = computed(() =>
-  drawerStatus.value ? ['logged_out', 'needs_pairing'].includes(drawerStatus.value.state) : false,
-);
+// response arrives fall back to the plain "paired" look rather than flashing
+// an error state; an unsaved fresh pairing shows "save to apply" instead of
+// the stale status of the device it is about to replace.
+const whatsappDrawerTone = computed<StatusTone>(() => {
+  if (whatsappUnsavedPairing.value) return 'ok';
+  return drawerStatus.value ? statusTone(drawerStatus.value.state) : 'ok';
+});
+const whatsappDrawerText = computed(() => {
+  if (whatsappUnsavedPairing.value) return t('agentEditor.im.whatsappPairedUnsaved');
+  return drawerStatus.value ? statusText(drawerStatus.value.state) : t('agentEditor.im.whatsappBindSuccess');
+});
+const whatsappNeedsRepair = computed(() => {
+  if (whatsappUnsavedPairing.value) return false;
+  return drawerStatus.value ? ['logged_out', 'needs_pairing'].includes(drawerStatus.value.state) : false;
+});
 const whatsappDrawerIcon = computed(() => {
   switch (whatsappDrawerTone.value) {
     case 'ok':
