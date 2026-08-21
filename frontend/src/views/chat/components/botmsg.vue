@@ -1,6 +1,29 @@
 <template>
     <div class="bot_msg" :class="{ 'is-embedded': embeddedMode }">
         <div style="display: flex;flex-direction: column; gap:8px">
+            <!-- IM 人工回复标记：区分运营者手动发送的消息与 AI 生成的回答 -->
+            <div v-if="session.channel === 'im_manual'" class="manual-reply-tag">
+                <t-icon name="user-talk" />
+                <span>{{ $t('chat.imManualTag') }}</span>
+            </div>
+            <!-- 人工回复携带的图片：小图内嵌预览；超限图片仅有占位说明（已实际发给对方） -->
+            <div v-if="session.channel === 'im_manual' && (manualImages.length || manualImagePlaceholders.length)"
+                class="manual-reply-images">
+                <img v-for="(img, idx) in manualImages" :key="idx" :src="img.url" class="manual-reply-image" />
+                <div v-for="(img, idx) in manualImagePlaceholders" :key="'p' + idx"
+                    class="manual-reply-image-placeholder">
+                    <t-icon name="image" />
+                    <span>{{ $t('chat.imManualImageNoPreview', { name: img.caption }) }}</span>
+                </div>
+            </div>
+            <!-- 人工回复携带的附件：仅元数据展示，文件本体已直接投递到 IM 对方 -->
+            <div v-if="session.channel === 'im_manual' && manualAttachments.length" class="manual-reply-attachments">
+                <div v-for="(att, idx) in manualAttachments" :key="idx" class="manual-reply-attachment">
+                    <t-icon name="file" />
+                    <span class="attachment-name">{{ att.file_name }}</span>
+                    <span v-if="att.file_size" class="attachment-size">{{ formatManualFileSize(att.file_size) }}</span>
+                </div>
+            </div>
             <!-- 显示@的知识库和文件（非 Agent 模式下显示） -->
             <div v-if="!session.isAgentMode && mentionedItems && mentionedItems.length > 0" class="mentioned_items">
                 <span v-for="item in mentionedItems" :key="item.id" class="mentioned_tag" :class="[
@@ -195,6 +218,16 @@ const props = defineProps({
 });
 
 const showRequestInfo = computed(() => !!(props.session?.request_id || props.session?.id));
+
+// IM 人工回复携带的媒体：小图内嵌 data URI，超限图片只有占位 caption；附件仅元数据。
+const manualImages = computed(() => (props.session?.images || []).filter(img => img.url));
+const manualImagePlaceholders = computed(() => (props.session?.images || []).filter(img => !img.url && img.caption));
+const manualAttachments = computed(() => props.session?.attachments || []);
+const formatManualFileSize = (bytes) => {
+    if (!bytes) return '';
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 // -----------------------------------------------------------------------------
 // Skill artifact download (drawer)
@@ -404,6 +437,75 @@ onBeforeUnmount(() => {
     display: flex;
     flex-direction: column;
     gap: 0;
+}
+
+.manual-reply-tag {
+    display: inline-flex;
+    align-items: center;
+    align-self: flex-start;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--td-warning-color-7, #d47f00);
+    background: var(--td-warning-color-1, #fff5e0);
+
+    .t-icon {
+        font-size: 13px;
+    }
+}
+
+.manual-reply-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+
+    .manual-reply-image {
+        max-width: 240px;
+        max-height: 240px;
+        border-radius: 8px;
+        border: 1px solid var(--td-component-border, #e7e7e7);
+        object-fit: cover;
+    }
+
+    .manual-reply-image-placeholder {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px dashed var(--td-component-border, #e7e7e7);
+        color: var(--td-text-color-secondary, #666);
+        font-size: 12px;
+    }
+}
+
+.manual-reply-attachments {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    .manual-reply-attachment {
+        display: inline-flex;
+        align-items: center;
+        align-self: flex-start;
+        gap: 6px;
+        padding: 6px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--td-component-border, #e7e7e7);
+        background: var(--td-bg-color-container, #fff);
+        font-size: 13px;
+
+        .attachment-name {
+            color: var(--td-text-color-primary, #333);
+        }
+
+        .attachment-size {
+            color: var(--td-text-color-placeholder, #999);
+            font-size: 12px;
+        }
+    }
 }
 
 // 内容包装器 - 与 Agent 模式的 answer 样式一致

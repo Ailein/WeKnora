@@ -300,6 +300,13 @@ func RegisterIMChannelRoutes(r *gin.RouterGroup, imHandler *handler.IMHandler, g
 		channels.POST("/:id/toggle", g.Admin(), imHandler.ToggleIMChannel)
 	}
 
+	// Operator manual replies into IM-bound sessions — Admin+: the message is
+	// delivered to an external IM user under the bot's identity.
+	imSessions := g.apiKeyGroup(r.Group("/im-sessions"), apiKeyManageChannels(apiKeyFullAccess()))
+	{
+		imSessions.POST("/:session_id/messages", g.Admin(), imHandler.SendIMSessionReply)
+	}
+
 	// WeChat QR code login (requires authentication) — Admin+: a successful
 	// scan binds a personal WeChat account to the tenant.
 	wechatGroup := g.apiKeyGroup(r.Group("/wechat"), apiKeyManageChannels(apiKeyFullAccess()))

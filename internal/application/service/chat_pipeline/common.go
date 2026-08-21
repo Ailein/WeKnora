@@ -155,7 +155,16 @@ func loadAndProcessHistory(
 	}
 
 	historyMap := make(map[string]*types.History)
+	var manualReplies []*types.Message
 	for _, message := range history {
+		if message.Role == "assistant" && message.Channel == types.ChannelIMManual {
+			// Operator manual replies never pair with a user message; they are
+			// appended to the preceding turn's answer after truncation below.
+			if message.IsCompleted {
+				manualReplies = append(manualReplies, message)
+			}
+			continue
+		}
 		h, ok := historyMap[message.RequestID]
 		if !ok {
 			h = &types.History{}
@@ -197,7 +206,38 @@ func loadAndProcessHistory(
 	}
 
 	slices.Reverse(historyList)
+	attachManualRepliesToHistory(historyList, manualReplies)
 	return historyList, nil
+}
+
+// attachManualRepliesToHistory appends operator manual replies to the answer
+// of the latest retained turn that started at or before each reply, so the
+// bot's next answer knows what the operator already told the user. Replies
+// with no preceding retained turn are dropped — the pair-based History shape
+// has no alternation-safe place for them (same policy as LoadAgentHistory).
+func attachManualRepliesToHistory(historyList []*types.History, manualReplies []*types.Message) {
+	if len(historyList) == 0 || len(manualReplies) == 0 {
+		return
+	}
+	sort.SliceStable(manualReplies, func(i, j int) bool {
+		return manualReplies[i].CreatedAt.Before(manualReplies[j].CreatedAt)
+	})
+	for _, m := range manualReplies {
+		var target *types.History
+		for _, h := range historyList {
+			if !h.CreateAt.After(m.CreatedAt) {
+				target = h
+			}
+		}
+		if target == nil {
+			continue
+		}
+		text := types.ManualReplyHistoryText(m)
+		if text == "" {
+			continue
+		}
+		target.Answer += "\n\n" + types.ManualReplyHistoryPrefix + text
+	}
 }
 
 // extractImageCaptions concatenates non-empty Caption fields from stored

@@ -141,6 +141,34 @@ func (attachments MessageAttachments) BuildPrompt() string {
 	return sb.String()
 }
 
+// ManualReplyHistoryPrefix labels an operator manual reply inside a replayed
+// answer so the model can tell it apart from its own words (and describe it as
+// the support staff's reply rather than claiming authorship). Hardcoded
+// Chinese per the history-assembly convention.
+const ManualReplyHistoryPrefix = "[人工客服回复] "
+
+// ManualReplyHistoryText renders an operator manual reply (Channel ==
+// ChannelIMManual) for LLM history replay: the reply text plus terse notes for
+// media the history cannot inline. Media notes follow the hardcoded-Chinese
+// convention already used by history assembly (e.g. "[用户上传图片内容]").
+func ManualReplyHistoryText(m *Message) string {
+	parts := make([]string, 0, 3)
+	if c := strings.TrimSpace(m.Content); c != "" {
+		parts = append(parts, c)
+	}
+	if n := len(m.Images); n > 0 {
+		parts = append(parts, fmt.Sprintf("(附 %d 张图片)", n))
+	}
+	if len(m.Attachments) > 0 {
+		names := make([]string, 0, len(m.Attachments))
+		for _, att := range m.Attachments {
+			names = append(names, att.FileName)
+		}
+		parts = append(parts, "(附文件: "+strings.Join(names, "、")+")")
+	}
+	return strings.Join(parts, " ")
+}
+
 // Value implements the driver.Valuer interface for database serialization
 func (m MessageAttachments) Value() (driver.Value, error) {
 	if m == nil {

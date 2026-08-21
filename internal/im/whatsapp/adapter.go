@@ -478,7 +478,7 @@ func (a *Adapter) SendReply(ctx context.Context, incoming *im.IncomingMessage, r
 
 	text := im.FormatIMDisplayContent(reply.Content, im.StreamDisplayFinal)
 	segments := splitMessage(toWhatsAppMarkup(text), maxSegmentRunes)
-	if len(segments) == 0 {
+	if len(segments) == 0 && len(reply.Attachments) == 0 {
 		return nil
 	}
 
@@ -502,7 +502,57 @@ func (a *Adapter) SendReply(ctx context.Context, incoming *im.IncomingMessage, r
 			return fmt.Errorf("whatsapp send segment %d/%d: %w", i+1, len(segments), err)
 		}
 	}
+
+	// Media travels after the text so the conversation reads in the order the
+	// operator composed it. A mid-list failure aborts (mirroring segment
+	// sends); the caller treats the whole reply as undelivered.
+	for i, att := range reply.Attachments {
+		if err := a.sendMediaAttachment(ctx, chatJID, att); err != nil {
+			return fmt.Errorf("whatsapp send attachment %d/%d: %w", i+1, len(reply.Attachments), err)
+		}
+	}
 	return nil
+}
+
+// sendMediaAttachment uploads one media payload to WhatsApp's media servers
+// and sends it as an image or document message, copying the upload envelope
+// into the message per the whatsmeow contract.
+func (a *Adapter) sendMediaAttachment(ctx context.Context, chatJID types.JID, att *im.ReplyAttachment) error {
+	if att == nil || len(att.Data) == 0 {
+		return fmt.Errorf("empty attachment payload")
+	}
+	if att.Kind == im.MessageTypeImage {
+		resp, err := a.client.Upload(ctx, att.Data, whatsmeow.MediaImage)
+		if err != nil {
+			return fmt.Errorf("upload image: %w", err)
+		}
+		_, err = a.client.SendMessage(ctx, chatJID, &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+			Mimetype:      proto.String(att.MimeType),
+			URL:           &resp.URL,
+			DirectPath:    &resp.DirectPath,
+			MediaKey:      resp.MediaKey,
+			FileEncSHA256: resp.FileEncSHA256,
+			FileSHA256:    resp.FileSHA256,
+			FileLength:    &resp.FileLength,
+		}})
+		return err
+	}
+	resp, err := a.client.Upload(ctx, att.Data, whatsmeow.MediaDocument)
+	if err != nil {
+		return fmt.Errorf("upload document: %w", err)
+	}
+	_, err = a.client.SendMessage(ctx, chatJID, &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
+		FileName:      proto.String(att.FileName),
+		Title:         proto.String(att.FileName),
+		Mimetype:      proto.String(att.MimeType),
+		URL:           &resp.URL,
+		DirectPath:    &resp.DirectPath,
+		MediaKey:      resp.MediaKey,
+		FileEncSHA256: resp.FileEncSHA256,
+		FileSHA256:    resp.FileSHA256,
+		FileLength:    &resp.FileLength,
+	}})
+	return err
 }
 
 // replyTarget resolves the chat JID to reply to. The full JID travels in

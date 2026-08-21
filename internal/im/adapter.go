@@ -123,8 +123,25 @@ type ReplyMessage struct {
 	IsStreaming bool
 	// IsFinal marks the last chunk of a streaming reply.
 	IsFinal bool
+	// Attachments carries media files to deliver after the text. Only
+	// operator manual replies populate it today; adapters that do not
+	// support outbound media ignore it (the manual-reply platform caps
+	// gate which platforms may receive attachments).
+	Attachments []*ReplyAttachment
 	// Extra holds platform-specific fields.
 	Extra map[string]string
+}
+
+// ReplyAttachment is one media file carried by a ReplyMessage.
+type ReplyAttachment struct {
+	// Kind is MessageTypeImage for inline images, MessageTypeFile otherwise.
+	Kind MessageType
+	// FileName is the display name (base name only, no path).
+	FileName string
+	// MimeType is the content type used by the platform upload.
+	MimeType string
+	// Data is the raw file payload.
+	Data []byte
 }
 
 // Adapter is the interface every IM platform must implement.

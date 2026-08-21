@@ -436,6 +436,8 @@ const mentionEmptyHint = computed(() => {
 
 // 智能体是否启用了图片上传（多模态）
 const isImageUploadEnabledByAgent = computed(() => {
+  // IM 人工回复不经过智能体：图片直接透传到 IM 平台，无需多模态配置。
+  if (props.manualImMode) return true;
   if (!hasAgentConfig.value) return false;
   return currentAgentConfig.value?.image_upload_enabled === true;
 });
@@ -509,6 +511,12 @@ const props = defineProps({
     required: false
   },
   embeddedMode: {
+    type: Boolean,
+    default: false
+  },
+  // IM 人工回复模式：会话来自受支持的 IM 渠道时启用，发送不触发 QA，
+  // 由父组件调用 IM 人工回复接口把内容直接送达对方。
+  manualImMode: {
     type: Boolean,
     default: false
   }
@@ -693,6 +701,10 @@ const remainingCount = computed(() => Math.max(0, selectedKbs.value.length - 2))
 
 // 根据不同状态组合计算输入框的 placeholder
 const inputPlaceholder = computed(() => {
+  // IM 人工回复模式：内容直接发给对方，与智能体/知识库状态无关
+  if (props.manualImMode) {
+    return t('input.placeholderManualIm');
+  }
   // 如果选择了自定义智能体
   if (isCustomAgent.value && selectedAgent.value) {
     // 有描述时显示描述，否则显示"向 [名称] 提问"
@@ -1887,8 +1899,29 @@ const createSession = async (val: string) => {
     return;
   }
 
-  // Embed 渠道由后端绑定 agent/KB，勿走平台侧 agent 列表与就绪校验
-  if (props.embeddedMode) {
+  // Embed 渠道由后端绑定 agent/KB，勿走平台侧 agent 列表与就绪校验；
+  // IM 人工回复不触发 QA，同样跳过智能体/模型就绪校验。
+  if (props.embeddedMode || props.manualImMode) {
+    if (props.manualImMode) {
+      // 图片/附件原样直传给 IM 对方（multipart），不走临时文档解析管道。
+      const MAX_MANUAL_ATTACHMENTS = 5;
+      const total = uploadedImages.value.length + uploadedAttachments.value.length;
+      if (total > MAX_MANUAL_ATTACHMENTS) {
+        MessagePlugin.warning(t('chat.attachmentTotalTooMany', { max: MAX_MANUAL_ATTACHMENTS }));
+        return;
+      }
+      const imageFiles = uploadedImages.value.map(img => img.file);
+      const attachmentFiles = [...uploadedAttachments.value];
+      const textarea = getTextareaEl();
+      if (textarea) textarea.blur();
+      emit('send-msg', val, selectedModelId.value || '', [], imageFiles, attachmentFiles);
+      uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview));
+      uploadedImages.value = [];
+      attachmentUploadRef.value?.clear();
+      uploadedAttachments.value = [];
+      clearvalue();
+      return;
+    }
     const textarea = getTextareaEl();
     if (textarea) textarea.blur();
     emit('send-msg', val, selectedModelId.value || '', [], [], []);
@@ -2480,6 +2513,11 @@ defineExpose({
     if (!text.trim()) return;
     query.value = text;
     nextTick(() => createSession(text));
+  },
+  // 发送失败时把草稿放回输入框，避免操作者输入的内容丢失。
+  restoreDraft(text: string) {
+    if (!text) return;
+    query.value = text;
   }
 });
 
@@ -2500,8 +2538,9 @@ defineExpose({
       </div>
 
       <!-- 附件列表区域 (由 AttachmentUpload 组件渲染) -->
+      <!-- 人工回复模式不传 sessionId：文件保持 local 状态原样发送，不上传为临时解析文档 -->
       <AttachmentUpload ref="attachmentUploadRef" :max-files="5"
-        :session-id="sessionId" :agent-id="selectedAgentId"
+        :session-id="manualImMode ? '' : sessionId" :agent-id="selectedAgentId"
         :agent-source-tenant-id="settingsStore.selectedAgentSourceTenantId ?? undefined"
         @update:files="uploadedAttachments = $event" />
 

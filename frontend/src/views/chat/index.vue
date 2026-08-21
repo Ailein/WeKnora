@@ -111,10 +111,15 @@
             </div>
         </transition>
         <div class="input-container" :class="{ 'is-embedded': embeddedMode }">
+            <div v-if="isManualImSession" class="manual-im-banner">
+                <t-icon name="user-talk" />
+                <span>{{ t('chat.imManualBanner', { platform: manualImPlatformLabel }) }}</span>
+            </div>
             <InputField ref="inputFieldRef"
                 @send-msg="(query, modelId, mentionedItems, imageFiles, attachmentFiles) => sendMsg(query, modelId, mentionedItems, imageFiles, attachmentFiles)"
                 @stop-generation="handleStopGeneration" :isReplying="isReplying" :sessionId="session_id"
-                :assistantMessageId="currentAssistantMessageId" :embeddedMode="embeddedMode"></InputField>
+                :assistantMessageId="currentAssistantMessageId" :embeddedMode="embeddedMode"
+                :manual-im-mode="isManualImSession"></InputField>
         </div>
     </div>
     <KnowledgeBaseEditorModal :visible="uiStore.showKBEditorModal" :mode="uiStore.kbEditorMode"
@@ -130,7 +135,7 @@ import { useRoute, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router';
 import InputField from '../../components/Input-field.vue';
 import botmsg from './components/botmsg.vue';
 import usermsg from './components/usermsg.vue';
-import { getMessageList, getSession } from "@/api/chat/index";
+import { getMessageList, getSession, sendImManualReply } from "@/api/chat/index";
 import { getSuggestedQuestions } from "@/api/agent/index";
 import { deleteTemporaryAttachment, uploadTemporaryAttachment } from '@/api/chat/temporary-attachments';
 import { useStream } from '../../api/chat/streame'
@@ -215,6 +220,45 @@ const attachStreamDebugToMessage = (message) => {
 const route = useRoute();
 const session_id = ref(props.session_id || route.params.chatid);
 const currentSession = ref(null);
+
+// ===== IM 人工回复（human takeover）=====
+// 支持人工回复的 IM 平台，与后端 internal/im/manual_reply.go 的
+// manualReplyPlatforms 保持一致。会话来自这些平台时，输入框切换为
+// 人工回复模式：内容直发给 IM 对方，不触发 QA（避免"网页里问、对方
+// 看不到、还污染该用户对话上下文"的误用）。
+const MANUAL_IM_REPLY_PLATFORMS = ['whatsapp'];
+const isManualImSession = computed(() =>
+    !props.embeddedMode && MANUAL_IM_REPLY_PLATFORMS.includes(currentSession.value?.im_platform || ''));
+const manualImPlatformLabel = computed(() => {
+    const platform = currentSession.value?.im_platform;
+    return platform ? t(`agentEditor.im.${platform}`) : '';
+});
+const manualReplySending = ref(false);
+
+const sendManualImReply = async (value, imageFiles = [], attachmentFiles = []) => {
+    if (manualReplySending.value) return;
+    manualReplySending.value = true;
+    try {
+        // 附件在人工回复模式下保持 local 状态（未上传为临时文档），取原始 File 直传。
+        const rawFiles = (attachmentFiles || []).map(item => item?.file).filter(Boolean);
+        const res = await sendImManualReply(session_id.value, value, imageFiles, rawFiles);
+        const msg = res?.data;
+        if (msg && typeof msg === 'object') {
+            messagesList.push({ ...msg, isAgentMode: false });
+        }
+        userHasScrolledUp.value = false;
+        scrollToBottom(true);
+        MessagePlugin.success(t('chat.imManualSent'));
+    } catch (e) {
+        console.error('[IM Manual Reply] send failed:', e);
+        MessagePlugin.error(e?.message || e?.error || t('chat.imManualSendFailed'));
+        // 发送失败时把文字放回输入框，避免操作者的草稿丢失。
+        // 图片/附件的选择状态已在输入组件里清掉，无法恢复，需要重新选择。
+        inputFieldRef.value?.restoreDraft?.(value);
+    } finally {
+        manualReplySending.value = false;
+    }
+};
 
 // 拉 session 详情，并按其 last_request_state 把输入栏状态恢复到当时的发起态。
 // 嵌入式（embeddedMode）由宿主页面注入 agent/KB，所以跳过整套恢复逻辑，
@@ -659,6 +703,11 @@ const handleStopGeneration = () => {
 };
 
 const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = [], attachmentFiles = []) => {
+    // IM 人工回复：直接投递给对方并记入历史，不进入 QA 流式管道。
+    if (isManualImSession.value) {
+        await sendManualImReply(value, imageFiles, attachmentFiles);
+        return;
+    }
     stopStream();
     prepareForNewOutgoingMessage();
     isReplying.value = true;
@@ -1221,6 +1270,25 @@ onBeforeRouteUpdate((to, from, next) => {
         min-height: auto;
         box-sizing: border-box;
         overflow-x: hidden;
+    }
+}
+
+.manual-im-banner {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 8px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--td-warning-color-7, #d47f00);
+    background: var(--td-warning-color-1, #fff5e0);
+    border: 1px solid var(--td-warning-color-3, #ffd48a);
+
+    .t-icon {
+        flex-shrink: 0;
+        font-size: 14px;
     }
 }
 

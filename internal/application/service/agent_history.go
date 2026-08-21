@@ -76,7 +76,16 @@ func LoadAgentHistory(
 		createdAt time.Time
 	}
 	pairs := make(map[string]*pair)
+	var manualReplies []*types.Message
 	for _, msg := range rows {
+		if msg.Role == "assistant" && msg.Channel == types.ChannelIMManual {
+			// Operator manual replies never have a paired user message; they
+			// are appended to the preceding turn's answer below instead.
+			if msg.IsCompleted {
+				manualReplies = append(manualReplies, msg)
+			}
+			continue
+		}
 		p, ok := pairs[msg.RequestID]
 		if !ok {
 			p = &pair{}
@@ -108,12 +117,69 @@ func LoadAgentHistory(
 		completePairs = completePairs[len(completePairs)-maxRounds:]
 	}
 
+	turnStarts := make([]time.Time, len(completePairs))
+	for i, p := range completePairs {
+		turnStarts[i] = p.createdAt
+	}
+	suffixes := manualReplySuffixes(turnStarts, manualReplies)
+
 	out := make([]chat.Message, 0, len(completePairs)*4)
-	for _, p := range completePairs {
+	for i, p := range completePairs {
 		out = append(out, buildUserHistoryMessage(p.user))
-		out = append(out, buildAssistantHistoryMessages(p.assistant)...)
+		msgs := buildAssistantHistoryMessages(p.assistant)
+		if suffixes[i] != "" {
+			msgs = appendManualReplySuffix(msgs, suffixes[i])
+		}
+		out = append(out, msgs...)
 	}
 	return out, nil
+}
+
+// manualReplySuffixes assigns each operator manual reply to the latest
+// retained turn that started at or before it and returns one ready-to-append
+// suffix per turn. Replies older than every retained turn are dropped: a lone
+// leading assistant message would break providers that require strictly
+// alternating roles, and the same policy keeps both history pipelines
+// consistent.
+func manualReplySuffixes(turnStarts []time.Time, manualReplies []*types.Message) []string {
+	suffixes := make([]string, len(turnStarts))
+	if len(turnStarts) == 0 || len(manualReplies) == 0 {
+		return suffixes
+	}
+	sort.SliceStable(manualReplies, func(i, j int) bool {
+		return manualReplies[i].CreatedAt.Before(manualReplies[j].CreatedAt)
+	})
+	for _, m := range manualReplies {
+		idx := -1
+		for i, start := range turnStarts {
+			if !start.After(m.CreatedAt) {
+				idx = i
+			}
+		}
+		if idx < 0 {
+			continue
+		}
+		text := types.ManualReplyHistoryText(m)
+		if text == "" {
+			continue
+		}
+		suffixes[idx] += "\n\n" + types.ManualReplyHistoryPrefix + text
+	}
+	return suffixes
+}
+
+// appendManualReplySuffix folds an operator-reply suffix into the turn's final
+// answer message, keeping the assistant/user alternation intact. When the turn
+// has no plain assistant message to extend (empty final answer), the suffix
+// becomes its own trailing assistant message.
+func appendManualReplySuffix(msgs []chat.Message, suffix string) []chat.Message {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) == 0 {
+			msgs[i].Content += suffix
+			return msgs
+		}
+	}
+	return append(msgs, chat.Message{Role: "assistant", Content: strings.TrimSpace(suffix)})
 }
 
 // buildUserHistoryMessage converts a stored user message into the chat.Message

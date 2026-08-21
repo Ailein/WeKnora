@@ -1,4 +1,4 @@
-import { get, post, put, del, postChat, getDown } from "../../utils/request";
+import { get, post, put, del, postChat, postUpload, getDown } from "../../utils/request";
 
 
 
@@ -47,6 +47,26 @@ export async function agentChat(data: {
     agent_enabled: data.agent_enabled,
     channel: "web"
   });
+}
+
+// Operator (human takeover) reply for IM-originated sessions: the backend
+// delivers the text through the bound IM channel and records it as a completed
+// assistant message. Admin-only; supported platforms are gated server-side.
+export async function sendImManualReply(
+  session_id: string,
+  content: string,
+  imageFiles: File[] = [],
+  attachmentFiles: File[] = [],
+) {
+  // 纯文本走 JSON；带媒体时切换 multipart（后端两种编码同一端点）。
+  if (imageFiles.length === 0 && attachmentFiles.length === 0) {
+    return post(`/api/v1/im-sessions/${session_id}/messages`, { content });
+  }
+  const form = new FormData();
+  form.append("content", content);
+  imageFiles.forEach((file) => form.append("images", file));
+  attachmentFiles.forEach((file) => form.append("attachments", file));
+  return postUpload(`/api/v1/im-sessions/${session_id}/messages`, form);
 }
 
 export async function getMessageList(data: { session_id: string; limit: number, created_at: string }) {

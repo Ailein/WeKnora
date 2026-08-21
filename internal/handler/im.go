@@ -3,7 +3,11 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -363,6 +367,162 @@ func (h *IMHandler) ToggleIMChannel(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": channel})
+}
+
+// SendIMSessionReply delivers an operator-typed manual reply into the IM
+// conversation bound to a session (human takeover). Admin-only: the reply is
+// sent to an external IM user under the bot's identity.
+//
+// SendIMSessionReply godoc
+// @Summary      发送 IM 人工回复
+// @Description  以人工身份向指定会话绑定的 IM 对话直接发送消息（不触发 AI 回答），并记入会话历史。支持 JSON（纯文本）或 multipart/form-data（content 字段 + images/attachments 文件）
+// @Tags         IM 渠道
+// @Accept       json
+// @Accept       multipart/form-data
+// @Produce      json
+// @Param        session_id  path      string                  true  "会话 ID"
+// @Param        request     body      map[string]interface{}  true  "消息内容（content）"
+// @Success      200         {object}  map[string]interface{}  "已持久化的消息"
+// @Failure      400         {object}  map[string]interface{}  "内容为空/过长、附件超限或平台不支持"
+// @Failure      404         {object}  map[string]interface{}  "会话未绑定 IM 对话"
+// @Failure      409         {object}  map[string]interface{}  "渠道运行时不在本实例"
+// @Failure      502         {object}  map[string]interface{}  "IM 平台投递失败"
+// @Security     Bearer
+// @Security     ApiKeyAuth
+// @Router       /im-sessions/{session_id}/messages [post]
+func (h *IMHandler) SendIMSessionReply(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session id is required"})
+		return
+	}
+
+	tenantID, ok := c.Request.Context().Value(types.TenantIDContextKey).(uint64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	content, attachments, err := parseManualReplyRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	msg, err := h.imService.SendManualReply(c.Request.Context(), tenantID, sessionID, content, attachments)
+	if err != nil {
+		switch {
+		case errors.Is(err, im.ErrManualReplyEmptyContent),
+			errors.Is(err, im.ErrManualReplyTooLong),
+			errors.Is(err, im.ErrManualReplyUnsupported),
+			errors.Is(err, im.ErrManualReplyTooManyAttachments),
+			errors.Is(err, im.ErrManualReplyAttachmentTooLarge),
+			errors.Is(err, im.ErrManualReplyBadAttachment),
+			errors.Is(err, im.ErrManualReplyMediaUnsupported):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.Is(err, im.ErrManualReplyNotIMSession):
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		case errors.Is(err, im.ErrManualReplyNotRunning):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		case errors.Is(err, im.ErrManualReplyDelivery):
+			logger.Errorf(c.Request.Context(), "[IM] Manual reply delivery failed for session %s: %v", sessionID, err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		default:
+			logger.Errorf(c.Request.Context(), "[IM] Manual reply failed for session %s: %v", sessionID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send manual reply"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": msg})
+}
+
+// parseManualReplyRequest accepts both the JSON body used for text-only
+// replies and multipart/form-data — a "content" field plus files under
+// "images" (must be image/*, delivered inline) and "attachments" (delivered
+// as documents).
+func parseManualReplyRequest(c *gin.Context) (string, []*im.ReplyAttachment, error) {
+	if !strings.HasPrefix(c.ContentType(), "multipart/") {
+		var req struct {
+			Content string `json:"content"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			return "", nil, errors.New("invalid request body")
+		}
+		return req.Content, nil, nil
+	}
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		return "", nil, errors.New("invalid multipart form")
+	}
+	var content string
+	if vals := form.Value["content"]; len(vals) > 0 {
+		content = vals[0]
+	}
+	var attachments []*im.ReplyAttachment
+	for _, fh := range form.File["images"] {
+		att, err := readManualReplyFile(fh, true)
+		if err != nil {
+			return "", nil, err
+		}
+		attachments = append(attachments, att)
+	}
+	for _, fh := range form.File["attachments"] {
+		att, err := readManualReplyFile(fh, false)
+		if err != nil {
+			return "", nil, err
+		}
+		attachments = append(attachments, att)
+	}
+	return content, attachments, nil
+}
+
+// manualReplyImageMimes are the image formats accepted for inline manual-reply
+// images (matching what WhatsApp renders inline).
+var manualReplyImageMimes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// readManualReplyFile buffers one uploaded file. The hard read cap only guards
+// process memory; the precise per-kind size limits live in the IM service.
+func readManualReplyFile(fh *multipart.FileHeader, isImage bool) (*im.ReplyAttachment, error) {
+	f, err := fh.Open()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read attachment %q", fh.Filename)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, int64(im.MaxIMAttachmentBytes)+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read attachment %q", fh.Filename)
+	}
+
+	mime := fh.Header.Get("Content-Type")
+	if mime == "" || mime == "application/octet-stream" {
+		if len(data) > 0 {
+			mime = http.DetectContentType(data)
+		}
+	}
+	mime = strings.TrimSpace(strings.SplitN(mime, ";", 2)[0])
+	kind := im.MessageTypeFile
+	if isImage {
+		// Whitelist instead of an image/* prefix: it keeps script-capable
+		// SVG out of the inline data-URI store and rejects formats WhatsApp
+		// cannot render inline anyway.
+		if !manualReplyImageMimes[mime] {
+			return nil, fmt.Errorf("file %q is not a supported image (jpeg/png/gif/webp)", fh.Filename)
+		}
+		kind = im.MessageTypeImage
+	}
+	return &im.ReplyAttachment{
+		Kind:     kind,
+		FileName: filepath.Base(fh.Filename),
+		MimeType: mime,
+		Data:     data,
+	}, nil
 }
 
 func writeIMCallbackACK(c *gin.Context, platform string) {
