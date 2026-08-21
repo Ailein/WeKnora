@@ -79,6 +79,7 @@ func newLifecycleTestService(db *gorm.DB, redisClient *redis.Client, instanceID 
 		db:               db,
 		channels:         make(map[string]*channelState),
 		leaderRetries:    make(map[string]*leaderRetryState),
+		lastStartErrors:  make(map[string]string),
 		adapterFactories: make(map[string]AdapterFactory),
 		redis:            redisClient,
 		instanceID:       instanceID,
