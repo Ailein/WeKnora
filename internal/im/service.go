@@ -335,6 +335,12 @@ type Service struct {
 	// instanceID uniquely identifies this service instance for leader election.
 	instanceID string
 
+	// inboxHub fans realtime operator-inbox events out to SSE subscribers;
+	// created lazily (see Service.inbox) so hand-built test services work.
+	inboxHubOnce sync.Once
+	inboxHub     *inboxHub
+	inboxSubOnce sync.Once
+
 	stopCh         chan struct{}
 	stopOnce       sync.Once
 	subscriberOnce sync.Once
@@ -872,6 +878,9 @@ func NewService(
 	// Initialize the QA worker pool and bounded queue.
 	s.qaQueue = newQAQueue(workers, maxQueue, maxPerUser, globalMaxWorkers, s.executeQARequest, redisClient)
 	s.qaQueue.Start(s.stopCh)
+
+	// Relay operator-inbox events across replicas (no-op without Redis).
+	s.startInboxEventSubscriber()
 
 	// Start periodic cleanup loops.
 	// Dedup cleanup is only needed in single-instance mode (local sync.Map);
@@ -1887,6 +1896,10 @@ func (s *Service) HandleMessage(ctx context.Context, msg *IncomingMessage, chann
 		s.sessionService.GenerateTitleAsync(sessionCtx, &sessionForTitle, msg.Content, titleModelID, nil)
 	}
 
+	// Capture the peer's display name for the operator inbox before any gate
+	// can consume the message.
+	s.rememberPeerName(sessionCtx, channelSession, msg.UserName)
+
 	// Human takeover: when an operator holds the conversation, record the
 	// message for the console and stay silent — no QA, no reply of any kind.
 	if s.takeoverGate(sessionCtx, channelSession, session, msg) {
@@ -2732,6 +2745,7 @@ func (s *Service) handleMessageStream(ctx context.Context, channel *IMChannel, m
 	if err != nil {
 		return fmt.Errorf("create user message: %w", err)
 	}
+	s.noteInboxActivity(qaCtx, session.ID, inboxNote{Role: InboxRoleUser, Preview: msg.Content})
 
 	// Create placeholder assistant message
 	assistantMsg, err = s.messageService.CreateMessage(qaCtx, createIMAssistantMessagePayload(session.ID, requestID))
@@ -2871,6 +2885,7 @@ loop:
 	if err := s.messageService.UpdateMessage(ctx, assistantMsg); err != nil {
 		logger.Warnf(ctx, "[IM] Failed to update assistant message: %v", err)
 	}
+	s.noteInboxActivity(ctx, session.ID, inboxNote{Role: InboxRoleAssistant, Preview: answer})
 
 	// After the answer went out, so a triggered handoff notice follows it.
 	s.noteBotAnswerOutcome(ctx, channel, session, msg, adapter, answerFailed)
@@ -2971,6 +2986,7 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 	if err != nil {
 		return "", fmt.Errorf("create user message: %w", err)
 	}
+	s.noteInboxActivity(ctx, session.ID, inboxNote{Role: InboxRoleUser, Preview: query})
 
 	// Create a placeholder assistant message
 	assistantMsg, err := s.messageService.CreateMessage(ctx, createIMAssistantMessagePayload(session.ID, requestID))
@@ -3080,6 +3096,7 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 	if err := s.messageService.UpdateMessage(ctx, assistantMsg); err != nil {
 		logger.Warnf(ctx, "[IM] Failed to update assistant message: %v", err)
 	}
+	s.noteInboxActivity(ctx, session.ID, inboxNote{Role: InboxRoleAssistant, Preview: answer})
 
 	// Return raw answer — callers apply cleanIMContent with the appropriate FileService.
 	return answer, nil

@@ -278,8 +278,20 @@ type ChannelSession struct {
 	ConsecutiveFailures int `json:"consecutive_failures" gorm:"not null;default:0"`
 	// HandoffNotifiedAt is when this conversation last fired a handoff
 	// notification; repeated triggers within the cooldown stay silent.
-	HandoffNotifiedAt *time.Time     `json:"handoff_notified_at"`
-	Metadata          types.JSON     `json:"metadata"      gorm:"type:jsonb;default:'{}'"`
+	HandoffNotifiedAt *time.Time `json:"handoff_notified_at"`
+	// PeerName is the conversation peer's IM display name (WhatsApp push name
+	// etc.), captured from inbound messages so the operator inbox can show a
+	// human label instead of a bare phone number / platform ID.
+	PeerName string `json:"peer_name" gorm:"type:varchar(255);not null;default:''"`
+	// OperatorUnreadCount counts user messages recorded since an operator last
+	// opened this conversation in the inbox; MarkInboxRead resets it.
+	OperatorUnreadCount int `json:"operator_unread_count" gorm:"not null;default:0"`
+	// LastMessagePreview/Role/At denormalize the most recent recorded message
+	// (either side) so the inbox list never has to touch the messages table.
+	LastMessagePreview string         `json:"last_message_preview" gorm:"type:varchar(500);not null;default:''"`
+	LastMessageRole    string         `json:"last_message_role"    gorm:"type:varchar(20);not null;default:''"`
+	LastMessageAt      *time.Time     `json:"last_message_at"`
+	Metadata           types.JSON     `json:"metadata"      gorm:"type:jsonb;default:'{}'"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
 	DeletedAt         gorm.DeletedAt `json:"deleted_at"    gorm:"index"`

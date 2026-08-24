@@ -150,6 +150,17 @@ Webhook 模式的接入方式就是把 `https://<你的域名>/api/v1/im/callbac
 
 同一会话 10 分钟冷却期内重复触发只切状态、不重复打扰（不再发提示语与通知），防止用户刷关键词轰炸运营群。表单校验要求开启时至少配置一种触发方式，Webhook 必须为 http(s) 地址。
 
+### 运营者收件箱（internal/im/inbox.go）
+
+侧栏「收件箱」是面向客服运营的工作台（入口仅对 admin 显示，接口与人工回复同为 Admin+）：左栏列出当前工作空间的全部 IM 对话，**人工接管中的置顶**、其余按最近消息倒序，可按「待人工 / 未读」过滤；右栏展示对话消息流（接管期消息与人工回复带标签），并内置回复框、接管控制与快捷短语。
+
+- **未读与预览**：`im_channel_sessions` 上的 `operator_unread_count`、`last_message_preview/role/at`、`peer_name`（IM 昵称，来自入站消息的 push name）由 `noteInboxActivity` 在每条消息落库后维护，收件箱列表因此是纯单表查询，不触碰 messages 表。运营者打开会话（`POST /api/v1/im-inbox/sessions/:session_id/read`）或发送人工回复即清零未读。
+- **实时推送**：`GET /api/v1/im-inbox/stream` 是 SSE 流——连接先收到 `type=ready`（未读总数），此后每条入站/出站消息、已读操作与接管切换都会推送 `type=session` 事件（更新后的会话条目 + 未读总数）。事件经 Redis Pub/Sub（`im:inbox:event`）跨实例转发，无 Redis 时走进程内 hub；前端据此实时更新列表与角标，打开中的会话自动刷新消息流。侧栏菜单角标在页面外为一次性拉取（有滞后），页面内由 SSE 持续刷新。
+- **快捷短语**：按工作空间存放在 `im_quick_replies` 表（每空间一行 JSON），`GET/PUT /api/v1/im-inbox/quick-replies` 整体读写，最多 50 条、每条 500 字。回复框的下拉选择会把短语插入草稿。
+- **回复与接管**：复用既有的手动回复（`POST /api/v1/im-sessions/:session_id/messages`）与接管（`PUT .../handling`）接口，因此平台能力一致——当前仅 WhatsApp 支持控制台回复，其他平台的回复框显示提示文案。列表条目的 `manual_reply_supported` 字段即该判断。
+
+列表接口 `GET /api/v1/im-inbox` 支持 `filter=human|unread`、`im_channel_id`、`page/page_size`（默认 100、上限 200），响应含 `items/total/unread_total`。过期的人工接管在列表与事件中一律按 bot 呈现（真实翻转发生在下一条入站消息）。
+
 ### 长连接的可靠性：leader 选举与 Supervisor
 
 - **多实例 leader 选举**（`service.go`）：websocket/longpoll 渠道在多实例部署（有 Redis）时，通过 `SETNX im:ws:leader:<channelID>`（TTL 15s，每 5s 续期）保证**只有一个实例**维持长连接；非 leader 实例每 10s 重试抢锁，leader 宕机后自动接管。longpoll 渠道停止时刻意不立即释放锁，等 TTL 自然过期，避免新旧实例短暂双写。续期失败（丢失 leader 身份）时走 `handleWSLeadershipLoss`：先停掉本实例的适配器，再把渠道放回抢锁重试循环——重试前会重新读一次数据库中的渠道行，因此期间被删除、禁用或改配置的渠道不会被旧运行时复活。

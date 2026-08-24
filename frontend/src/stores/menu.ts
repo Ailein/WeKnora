@@ -31,6 +31,7 @@ export const useMenuStore = defineStore('menuStore', () => {
     },
     { title: '', titleKey: 'menu.knowledgeBase', icon: 'zhishiku', path: 'knowledge-bases' },
     { title: '', titleKey: 'menu.agents', icon: 'agent', path: 'agents', requiredCapability: 'agents' },
+    { title: '', titleKey: 'menu.imInbox', icon: 'imInbox', path: 'im-inbox', requiredCapability: 'integrations.im' },
     { title: '', titleKey: 'menu.organizations', icon: 'organization', path: 'organizations', requiredCapability: 'organizations' },
     { title: '', titleKey: 'menu.settings', icon: 'setting', path: 'settings' },
     { title: '', titleKey: 'menu.logout', icon: 'logout', path: 'logout' }
@@ -74,6 +75,11 @@ export const useMenuStore = defineStore('menuStore', () => {
         return false
       }
       if (item.path === 'organizations' && !authStore.hasRole('admin')) {
+        return false
+      }
+      // 收件箱后端接口是 Admin+（等同手动回复权限），非 admin 只会看到 403，
+      // 入口直接隐藏。
+      if (item.path === 'im-inbox' && !authStore.hasRole('admin')) {
         return false
       }
       if (!deploymentCapabilities.isSupported(item.requiredCapability)) {

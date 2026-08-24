@@ -175,6 +175,10 @@ func (s *Service) SetSessionHandling(
 		return nil, fmt.Errorf("update handling mode: %w", err)
 	}
 
+	// Keep other operators' inboxes in sync: a takeover switch changes the
+	// conversation's pinning even though no message was recorded.
+	s.publishInboxItemUpdate(ctx, cs.SessionID)
+
 	logger.Infof(ctx, "[IM] Session handling set: platform=%s session=%s mode=%s timeout=%dmin",
 		cs.Platform, cs.SessionID, mode, timeoutMinutes)
 	return handlingFromChannelSession(cs), nil
@@ -231,6 +235,8 @@ func (s *Service) takeoverGate(ctx context.Context, cs *ChannelSession, session 
 			CreatedAt:   time.Now(),
 		}); err != nil {
 			logger.Errorf(ctx, "[IM] Failed to record message during takeover for session %s: %v", session.ID, err)
+		} else {
+			s.noteInboxActivity(ctx, session.ID, inboxNote{Role: InboxRoleUser, Preview: content})
 		}
 	}
 	// Surface the conversation for the operator; best-effort like the manual

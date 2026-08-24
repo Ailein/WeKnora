@@ -307,6 +307,18 @@ func RegisterIMChannelRoutes(r *gin.RouterGroup, imHandler *handler.IMHandler, g
 		imAnalytics.GET("", g.Viewer(), imHandler.GetIMAnalytics)
 	}
 
+	// Operator inbox — Admin+ like manual replies: the list exposes message
+	// previews of external IM conversations and the workbench exists to answer
+	// them, which non-admins cannot do anyway.
+	imInbox := g.apiKeyGroup(r.Group("/im-inbox"), apiKeyManageChannels(apiKeyFullAccess()))
+	{
+		imInbox.GET("", g.Admin(), imHandler.ListIMInbox)
+		imInbox.GET("/stream", g.Admin(), imHandler.StreamIMInbox)
+		imInbox.POST("/sessions/:session_id/read", g.Admin(), imHandler.MarkIMInboxRead)
+		imInbox.GET("/quick-replies", g.Admin(), imHandler.GetIMQuickReplies)
+		imInbox.PUT("/quick-replies", g.Admin(), imHandler.PutIMQuickReplies)
+	}
+
 	// Operator manual replies into IM-bound sessions — Admin+: the message is
 	// delivered to an external IM user under the bot's identity. The takeover
 	// endpoints are Admin+ too: muting the bot for an external conversation is

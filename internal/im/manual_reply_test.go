@@ -81,6 +81,11 @@ func createManualReplyTables(t *testing.T, db *gorm.DB) {
 		handling_timeout_minutes INTEGER NOT NULL DEFAULT 0,
 		consecutive_failures INTEGER NOT NULL DEFAULT 0,
 		handoff_notified_at DATETIME,
+		peer_name TEXT NOT NULL DEFAULT '',
+		operator_unread_count INTEGER NOT NULL DEFAULT 0,
+		last_message_preview TEXT NOT NULL DEFAULT '',
+		last_message_role TEXT NOT NULL DEFAULT '',
+		last_message_at DATETIME,
 		metadata TEXT DEFAULT '{}',
 		created_at DATETIME,
 		updated_at DATETIME,
@@ -99,6 +104,13 @@ func createManualReplyTables(t *testing.T, db *gorm.DB) {
 		deleted_at DATETIME
 	)`).Error; err != nil {
 		t.Fatalf("create sessions: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE im_quick_replies (
+		tenant_id INTEGER PRIMARY KEY,
+		items TEXT NOT NULL DEFAULT '[]',
+		updated_at DATETIME
+	)`).Error; err != nil {
+		t.Fatalf("create im_quick_replies: %v", err)
 	}
 }
 

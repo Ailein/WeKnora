@@ -226,6 +226,8 @@ func (s *Service) handoffGate(
 		CreatedAt:   time.Now(),
 	}); err != nil {
 		logger.Errorf(ctx, "[IM] Failed to record handoff trigger message for session %s: %v", session.ID, err)
+	} else {
+		s.noteInboxActivity(ctx, session.ID, inboxNote{Role: InboxRoleUser, Preview: msg.Content})
 	}
 
 	logger.Infof(ctx, "[IM] Handoff keyword trigger: platform=%s session=%s user=%s keyword=%q",
@@ -354,6 +356,8 @@ func (s *Service) triggerHandoff(
 		CreatedAt:   time.Now(),
 	}); err != nil {
 		logger.Errorf(ctx, "[IM] Failed to record handoff auto-reply for session %s: %v", session.ID, err)
+	} else {
+		s.noteInboxActivity(ctx, session.ID, inboxNote{Role: InboxRoleAssistant, Preview: reply})
 	}
 	// Resurface the conversation in the operator's session list.
 	if err := s.db.Model(&types.Session{}).Where("id = ?", session.ID).

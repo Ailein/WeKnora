@@ -85,7 +85,7 @@
                         <div class="menu_item-box">
                             <div class="menu_icon">
                                 <img class="icon"
-                                    :src="getImgSrc(item.icon == 'zhishiku' ? knowledgeIcon : item.icon == 'agent' ? agentIcon : item.icon == 'organization' ? organizationIcon : item.icon == 'logout' ? logoutIcon : item.icon == 'setting' ? settingIcon : prefixIcon)"
+                                    :src="getImgSrc(item.icon == 'zhishiku' ? knowledgeIcon : item.icon == 'agent' ? agentIcon : item.icon == 'imInbox' ? imInboxIcon : item.icon == 'organization' ? organizationIcon : item.icon == 'logout' ? logoutIcon : item.icon == 'setting' ? settingIcon : prefixIcon)"
                                     alt="">
                             </div>
                             <template v-if="!uiStore.sidebarCollapsed">
@@ -94,6 +94,9 @@
                                     class="menu-pending-badge"
                                     :title="t('organization.settings.pendingJoinRequestsBadge')">{{
                                         orgStore.totalPendingJoinRequestCount }}</span>
+                                <span v-if="item.path === 'im-inbox' && imInboxStore.unreadTotal > 0"
+                                    class="menu-pending-badge" :title="t('imInbox.unreadTotalTip')">{{
+                                        imInboxStore.unreadTotal > 99 ? '99+' : imInboxStore.unreadTotal }}</span>
                             </template>
                         </div>
                     </div>
@@ -249,6 +252,7 @@ import { useMenuStore } from '@/stores/menu';
 import { useAuthStore } from '@/stores/auth';
 import { useDeploymentCapabilitiesStore } from '@/stores/deploymentCapabilities';
 import { useOrganizationStore } from '@/stores/organization';
+import { useImInboxStore } from '@/stores/imInbox';
 import { useUIStore } from '@/stores/ui';
 import { useCommandPaletteStore } from '@/stores/commandPalette';
 import { MessagePlugin, DialogPlugin, Icon as TIcon } from "tdesign-vue-next";
@@ -293,6 +297,7 @@ const usemenuStore = useMenuStore();
 const authStore = useAuthStore();
 const deploymentCapabilities = useDeploymentCapabilitiesStore();
 const orgStore = useOrganizationStore();
+const imInboxStore = useImInboxStore();
 const uiStore = useUIStore();
 const commandPaletteStore = useCommandPaletteStore();
 
@@ -411,6 +416,8 @@ const isMenuItemActive = (itemPath: string): boolean => {
             return currentRoute === 'agentList';
         case 'organizations':
             return currentRoute === 'organizationList';
+        case 'im-inbox':
+            return currentRoute === 'imInbox';
         case 'creatChat':
             return currentRoute === 'kbCreatChat' || currentRoute === 'globalCreatChat';
         case 'settings':
@@ -439,13 +446,13 @@ const getIconActiveState = (itemPath: string) => {
 // 分离上下两部分菜单（使用 visibleMenuArr 以便 lite 模式过滤 logout）
 const topMenuItems = computed<MenuItem[]>(() => {
     return (visibleMenuArr.value as unknown as MenuItem[]).filter((item: MenuItem) =>
-        item.path === 'knowledge-bases' || item.path === 'agents' || item.path === 'organizations' || item.path === 'creatChat'
+        item.path === 'knowledge-bases' || item.path === 'agents' || item.path === 'im-inbox' || item.path === 'organizations' || item.path === 'creatChat'
     );
 });
 
 const bottomMenuItems = computed<MenuItem[]>(() => {
     return (visibleMenuArr.value as unknown as MenuItem[]).filter((item: MenuItem) => {
-        if (item.path === 'knowledge-bases' || item.path === 'agents' || item.path === 'organizations' || item.path === 'creatChat') {
+        if (item.path === 'knowledge-bases' || item.path === 'agents' || item.path === 'im-inbox' || item.path === 'organizations' || item.path === 'creatChat') {
             return false;
         }
         return true;
@@ -1001,6 +1008,11 @@ onMounted(async () => {
     if (deploymentCapabilities.isSupported('organizations') && orgStore.organizations.length === 0) {
         orgStore.fetchOrganizations();
     }
+    // 收件箱未读角标：仅当入口对当前用户可见（admin + IM 能力）时拉取一次；
+    // 收件箱页面内的 SSE 会持续刷新该值。
+    if (deploymentCapabilities.isSupported('integrations.im') && authStore.hasRole('admin')) {
+        imInboxStore.ensureFresh();
+    }
 });
 
 onUnmounted(() => {
@@ -1037,6 +1049,7 @@ let prefixIcon = ref('prefixIcon.svg');
 let logoutIcon = ref('logout.svg');
 let settingIcon = ref('setting.svg');
 let agentIcon = ref('agent.svg');
+let imInboxIcon = ref('im-inbox.svg');
 let organizationIcon = ref('organization.svg');
 let pathPrefix = ref(route.name)
 const getIcon = (path: string) => {
@@ -1052,6 +1065,9 @@ const getIcon = (path: string) => {
 
     // 智能体图标：只在智能体页面显示绿色
     agentIcon.value = agentsActiveState ? 'agent-green.svg' : 'agent.svg';
+
+    // 收件箱图标：只在收件箱页面显示绿色
+    imInboxIcon.value = route.name === 'imInbox' ? 'im-inbox-green.svg' : 'im-inbox.svg';
 
     // 组织图标：只在组织页面显示绿色
     organizationIcon.value = organizationsActiveState ? 'organization-green.svg' : 'organization.svg';

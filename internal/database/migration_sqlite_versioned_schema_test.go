@@ -19,6 +19,7 @@ var versionedSQLiteTables = []string{
 	"system_settings",
 	"knowledge_processing_spans",
 	"knowledge_tag_relations",
+	"im_quick_replies", // 000087
 }
 
 // versionedSQLiteColumns maps each existing table to the columns that the
@@ -35,10 +36,12 @@ var versionedSQLiteColumns = map[string][]string{
 	"im_channel_sessions": {
 		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // 000085
 		"consecutive_failures", "handoff_notified_at", // 000086
+		"peer_name", "operator_unread_count", // 000087
+		"last_message_preview", "last_message_role", "last_message_at", // 000087
 	},
 }
 
-const expectedSQLiteMigrationVersion = 13
+const expectedSQLiteMigrationVersion = 14
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

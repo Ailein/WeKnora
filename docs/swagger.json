@@ -2617,6 +2617,62 @@
                 }
             }
         },
+        "/im-analytics": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "按自然日聚合当前租户 IM 渠道的会话、消息、接管与响应时长指标；仅统计 IM 渠道消息，不含控制台/网页流量",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "查询 IM 分析看板数据",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "统计天数（含今天，1-90，默认 7）",
+                        "name": "days",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "查看者相对 UTC 的偏移分钟数（东为正，默认 0）",
+                        "name": "tz_offset_minutes",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "仅统计指定 IM 渠道",
+                        "name": "im_channel_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "看板数据（totals/daily/channels/top_users）",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "未认证",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/im-channels/{id}": {
             "put": {
                 "security": [
@@ -2647,7 +2703,7 @@
                         "required": true
                     },
                     {
-                        "description": "更新字段（name/mode/output_mode/knowledge_base_id/credentials/enabled）",
+                        "description": "更新字段（name/mode/output_mode/knowledge_base_id/credentials/handoff_config/enabled）",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -2821,6 +2877,240 @@
                     },
                     "404": {
                         "description": "渠道不存在",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/im-inbox": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "列出当前租户全部 IM 对话：人工接管中的置顶，其余按最近消息排序；含未读数、最近消息预览与渠道信息",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "查询运营者收件箱会话列表",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "过滤：human（人工接管中）/ unread（有未读），默认全部",
+                        "name": "filter",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "仅列出指定 IM 渠道",
+                        "name": "im_channel_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量（默认 100，最大 200）",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "items/total/unread_total",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "未认证",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/im-inbox/quick-replies": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "返回当前租户的快捷短语列表（运营者共享）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "查询收件箱快捷短语",
+                "responses": {
+                    "200": {
+                        "description": "items",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "未认证",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "整体替换当前租户的快捷短语列表（最多 50 条，每条 500 字符内；空白项自动剔除）",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "更新收件箱快捷短语",
+                "parameters": [
+                    {
+                        "description": "items：字符串数组",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "规范化后的 items",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "超出数量或长度限制",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "未认证",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/im-inbox/sessions/{session_id}/read": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "运营者打开会话后清零其未读计数；幂等，返回租户剩余未读总数",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "标记收件箱会话已读",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "会话 ID",
+                        "name": "session_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "unread_total",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "未认证",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/im-inbox/stream": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Server-Sent Events 流：连接后先收到 type=ready（含未读总数），此后每条 IM 消息/已读操作推送 type=session 事件，item 为更新后的会话条目",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "订阅收件箱实时事件（SSE）",
+                "responses": {
+                    "200": {
+                        "description": "SSE 事件流",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "未认证",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true

@@ -241,6 +241,14 @@ func (s *Service) SendManualReply(
 		logger.Warnf(ctx, "[IM] Failed to bump session %s after manual reply: %v", sessionID, err)
 	}
 
+	// An operator who replies has read the conversation: refresh the inbox
+	// preview and clear the unread badge.
+	preview := content
+	if preview == "" {
+		preview = "[附件]"
+	}
+	s.noteInboxActivity(ctx, sessionID, inboxNote{Role: InboxRoleOperator, Preview: preview, ResetUnread: true})
+
 	// An operator reply is takeover activity: push the auto-resume window out
 	// so the bot never barges into the ongoing human conversation.
 	s.extendTakeoverAfterManualReply(ctx, tenantID, sessionID)

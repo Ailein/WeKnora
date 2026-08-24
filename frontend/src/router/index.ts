@@ -139,6 +139,14 @@ const router = createRouter({
           meta: { requiresInit: true, requiresAuth: true, requiredCapability: 'agents' }
         },
         {
+          // 运营者收件箱：IM 客服工作台（后端接口为 Admin+，菜单入口也只对
+          // admin 显示；直接访问 URL 的非 admin 用户会收到接口 403）。
+          path: "im-inbox",
+          name: "imInbox",
+          component: () => import("../views/inbox/ImInbox.vue"),
+          meta: { requiresInit: true, requiresAuth: true, requiredCapability: 'integrations.im' }
+        },
+        {
           path: "integrations",
           redirect: (to) => ({
             path: "/platform/settings",

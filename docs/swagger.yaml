@@ -7780,6 +7780,41 @@ paths:
       summary: 获取FAQ导入进度
       tags:
       - FAQ管理
+  /im-analytics:
+    get:
+      description: 按自然日聚合当前租户 IM 渠道的会话、消息、接管与响应时长指标；仅统计 IM 渠道消息，不含控制台/网页流量
+      parameters:
+      - description: 统计天数（含今天，1-90，默认 7）
+        in: query
+        name: days
+        type: integer
+      - description: 查看者相对 UTC 的偏移分钟数（东为正，默认 0）
+        in: query
+        name: tz_offset_minutes
+        type: integer
+      - description: 仅统计指定 IM 渠道
+        in: query
+        name: im_channel_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 看板数据（totals/daily/channels/top_users）
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: 未认证
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 查询 IM 分析看板数据
+      tags:
+      - IM 渠道
   /im-channels/{id}:
     delete:
       description: 删除指定 IM 渠道
@@ -7823,7 +7858,7 @@ paths:
         name: id
         required: true
         type: string
-      - description: 更新字段（name/mode/output_mode/knowledge_base_id/credentials/enabled）
+      - description: 更新字段（name/mode/output_mode/knowledge_base_id/credentials/handoff_config/enabled）
         in: body
         name: request
         required: true
@@ -7913,6 +7948,153 @@ paths:
       - Bearer: []
       - ApiKeyAuth: []
       summary: 启用/停用 IM 渠道
+      tags:
+      - IM 渠道
+  /im-inbox:
+    get:
+      description: 列出当前租户全部 IM 对话：人工接管中的置顶，其余按最近消息排序；含未读数、最近消息预览与渠道信息
+      parameters:
+      - description: 过滤：human（人工接管中）/ unread（有未读），默认全部
+        in: query
+        name: filter
+        type: string
+      - description: 仅列出指定 IM 渠道
+        in: query
+        name: im_channel_id
+        type: string
+      - description: 页码（默认 1）
+        in: query
+        name: page
+        type: integer
+      - description: 每页数量（默认 100，最大 200）
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: items/total/unread_total
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: 未认证
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 查询运营者收件箱会话列表
+      tags:
+      - IM 渠道
+  /im-inbox/quick-replies:
+    get:
+      description: 返回当前租户的快捷短语列表（运营者共享）
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: items
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: 未认证
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 查询收件箱快捷短语
+      tags:
+      - IM 渠道
+    put:
+      consumes:
+      - application/json
+      description: 整体替换当前租户的快捷短语列表（最多 50 条，每条 500 字符内；空白项自动剔除）
+      parameters:
+      - description: items：字符串数组
+        in: body
+        name: request
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 规范化后的 items
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 超出数量或长度限制
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: 未认证
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 更新收件箱快捷短语
+      tags:
+      - IM 渠道
+  /im-inbox/sessions/{session_id}/read:
+    post:
+      description: 运营者打开会话后清零其未读计数；幂等，返回租户剩余未读总数
+      parameters:
+      - description: 会话 ID
+        in: path
+        name: session_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: unread_total
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: 未认证
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 标记收件箱会话已读
+      tags:
+      - IM 渠道
+  /im-inbox/stream:
+    get:
+      description: Server-Sent Events 流：连接后先收到 type=ready（含未读总数），此后每条 IM 消息/已读操作推送
+        type=session 事件，item 为更新后的会话条目
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE 事件流
+          schema:
+            type: string
+        "401":
+          description: 未认证
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 订阅收件箱实时事件（SSE）
       tags:
       - IM 渠道
   /im-sessions/{session_id}/handling:
