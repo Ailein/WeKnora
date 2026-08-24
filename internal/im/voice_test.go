@@ -193,3 +193,12 @@ func TestVoiceErrorReply(t *testing.T) {
 		}
 	}
 }
+
+// A WhatsApp voice note carries no text until the QA worker transcribes it, so
+// HandleMessage's empty-message gate must let it through on the strength of its
+// FileKey — otherwise the user gets "未能识别这条语音" instead of an answer.
+func TestVoiceMessagePassesEmptyMessageGate(t *testing.T) {
+	if hint, empty := emptyIncomingMessageReply(voiceMsg()); empty {
+		t.Fatalf("voice message rejected before transcription: hint=%q", hint)
+	}
+}

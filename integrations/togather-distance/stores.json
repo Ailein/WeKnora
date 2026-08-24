@@ -1,0 +1,122 @@
+{
+  "brand": "Togather (讲饮讲吃)",
+  "stores": [
+    {
+      "id": 1,
+      "name": "Seremban 2",
+      "state": "Negeri Sembilan",
+      "address": "No.298, Jalan S2 B13, Uptown Avenue, Seremban 2, 70300 Negeri Sembilan",
+      "lat": 2.6958174,
+      "lng": 101.9107079,
+      "maps_url": "https://maps.app.goo.gl/eiFqh9dcgpYQfhw58"
+    },
+    {
+      "id": 2,
+      "name": "Kepong",
+      "state": "Kuala Lumpur",
+      "address": "No.2 Laman Rimbunan Raya, Laman Rimbunan Kepong, 52100 Kuala Lumpur",
+      "lat": 3.2105612,
+      "lng": 101.6517557,
+      "maps_url": "https://maps.app.goo.gl/3S84N7WAjtXQUAER7"
+    },
+    {
+      "id": 3,
+      "name": "Puchong",
+      "state": "Selangor",
+      "address": "No.1, Jalan Kenari 8, Bandar Puchong Jaya, 47170 Puchong, Selangor",
+      "lat": 3.0481597,
+      "lng": 101.6231238,
+      "maps_url": "https://maps.app.goo.gl/PBqt6Yc7LfHzt6Mb8"
+    },
+    {
+      "id": 4,
+      "name": "Kuchai Lama",
+      "state": "Kuala Lumpur",
+      "address": "No.32A-G, Jalan Kuchai Maju 1, Kuchai Entrepreneurs Park, 58200 Kuala Lumpur",
+      "lat": 3.0904356,
+      "lng": 101.6868761,
+      "maps_url": "https://maps.app.goo.gl/9wbWUg9UyDqm8UYp8"
+    },
+    {
+      "id": 5,
+      "name": "SS2 PJ",
+      "state": "Selangor",
+      "address": "No.1, Ground Floor, Jalan SS2/55, SS2, 47300 Petaling Jaya, Selangor",
+      "lat": 3.1166944,
+      "lng": 101.6217706,
+      "maps_url": "https://maps.app.goo.gl/PjkRQPfgvf8A1iL37"
+    },
+    {
+      "id": 6,
+      "name": "Setapak (PV128)",
+      "state": "Kuala Lumpur",
+      "address": "No.21, Ground Floor & Mezzanine Floor, PV128, Off Jalan Genting Klang, 53300 Kuala Lumpur",
+      "lat": 3.2007818,
+      "lng": 101.7178772,
+      "maps_url": "https://maps.app.goo.gl/PLSu49aivS3boNYu5"
+    },
+    {
+      "id": 7,
+      "name": "Setia Alam",
+      "state": "Selangor",
+      "address": "No.3, Jalan Setia Prima QU13/Q, Setia Alam, Seksyen U13, 40170 Shah Alam, Selangor",
+      "lat": 3.0997701,
+      "lng": 101.445131,
+      "maps_url": "https://maps.app.goo.gl/r5ZDEEyQV7CdsXFx6"
+    },
+    {
+      "id": 8,
+      "name": "Kota Kemuning",
+      "state": "Selangor",
+      "address": "No.39, Jalan Anggerik Aranda C31/C, Kota Kemuning, 40460 Shah Alam, Selangor",
+      "lat": 2.9913966,
+      "lng": 101.5468028,
+      "maps_url": "https://maps.app.goo.gl/NgnePfQ5dDinC6YQ6"
+    },
+    {
+      "id": 9,
+      "name": "Bandar Botanic / Klang",
+      "state": "Selangor",
+      "address": "No.39, 39-1 & 39-2, Jalan Mahogani 5/KS7, Bandar Botanic, 41200 Klang, Selangor",
+      "lat": 2.996003,
+      "lng": 101.445652,
+      "maps_url": "https://maps.app.goo.gl/VpY5s7HCRkGF3BZw9"
+    },
+    {
+      "id": 10,
+      "name": "Cheras C118",
+      "state": "Selangor",
+      "address": "No.23-G & 25-G, Jalan Tengah, Cheras Selatan 118, 43200 Cheras, Selangor",
+      "lat": 3.0351058,
+      "lng": 101.7685313,
+      "maps_url": "https://maps.app.goo.gl/SZ7GVqD5zoCirMqk6"
+    },
+    {
+      "id": 11,
+      "name": "Pandan Indah",
+      "state": "Kuala Lumpur",
+      "address": "No.18G & 18M, Jalan Pandan Indah 4/33, Pandan Indah, 55100 K.L",
+      "lat": 3.13311,
+      "lng": 101.7533759,
+      "maps_url": "https://maps.app.goo.gl/P5AXJEemYiTd54my5"
+    },
+    {
+      "id": 12,
+      "name": "Austin Heights",
+      "state": "Johor",
+      "address": "No.41 (GF), Jalan Austin Heights 8/8, Taman Mount Austin, 81100 Johor Bahru, Johor",
+      "lat": 1.565174,
+      "lng": 103.77722,
+      "maps_url": "https://maps.app.goo.gl/QjREqwavvFcBmtWT9"
+    },
+    {
+      "id": 13,
+      "name": "Sutera Mall",
+      "state": "Johor",
+      "address": "Lot G-015 & G-016, Ground Floor, Sutera Mall, Taman Sutera Utama, 81300 Johor Bahru, Johor",
+      "lat": 1.5176508,
+      "lng": 103.6715487,
+      "maps_url": "https://maps.app.goo.gl/ywJSnLPMa1FYiwZ36"
+    }
+  ]
+}

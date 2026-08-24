@@ -288,3 +288,33 @@ func TestManualReplyExtendsTakeoverWindow(t *testing.T) {
 		t.Fatalf("indefinite takeover gained an expiry: %v", row.HandlingExpiresAt)
 	}
 }
+
+// HandleMessage consults the takeover gate before the empty-message hint: while
+// an operator holds the conversation the bot must stay silent even for messages
+// the QA pipeline could never answer, or the customer sees a bot reply in the
+// middle of a human conversation.
+func TestTakeoverSilencesUnanswerableMessage(t *testing.T) {
+	svc, _, msgSvc, channel := newManualReplyFixture(t)
+	cs := &ChannelSession{
+		Platform: "whatsapp", UserID: "8613800138000",
+		SessionID: "session-dm", TenantID: 1, IMChannelID: channel.ID,
+		HandlingMode: HandlingModeHuman,
+	}
+	createManualReplySession(t, svc.db, cs)
+
+	// A rich message the platform could not normalize into text; outside a
+	// takeover this shape draws the "unsupported message" hint from the bot.
+	msg := &IncomingMessage{
+		Platform: PlatformWhatsApp, UserID: cs.UserID,
+		Extra: map[string]string{"raw_msgtype": "video"},
+	}
+	if _, empty := emptyIncomingMessageReply(msg); !empty {
+		t.Fatal("fixture no longer represents an unanswerable message")
+	}
+	if !svc.takeoverGate(context.Background(), cs, &types.Session{ID: "session-dm"}, msg) {
+		t.Fatal("takeoverGate = false for an unanswerable message, want silenced")
+	}
+	if len(msgSvc.created) != 0 {
+		t.Fatalf("contentless message recorded %d rows, want 0", len(msgSvc.created))
+	}
+}

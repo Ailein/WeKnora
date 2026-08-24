@@ -210,8 +210,16 @@ import {
   upsertInboxItem,
 } from '@/components/imInbox';
 import { useImInboxStore } from '@/stores/imInbox';
-import { renderChatMarkdown } from '@/utils/chatMarkdownRenderer';
-import { safeMarkdownToHTML, sanitizeMarkdownHTML } from '@/utils/security';
+import {
+  createChatMarkdownRenderer,
+  renderChatMarkdown,
+} from '@/utils/chatMarkdownRenderer';
+import {
+  createSafeImage,
+  isValidImageURL,
+  safeMarkdownToHTML,
+  sanitizeMarkdownHTML,
+} from '@/utils/security';
 
 const { t, locale } = useI18n();
 const router = useRouter();
@@ -530,8 +538,17 @@ const formatMsgTime = (iso: string) => {
   });
 };
 
+// The inbox shows short operator/bot turns, so it needs no mermaid or code
+// renderer — but it must still bring its own instance: `marked` keeps a global
+// renderer and sharing one would leak the chat view's image validator here.
+const markdownRenderer = createChatMarkdownRenderer({
+  imageRenderer: ({ href, title, text }) => createSafeImage(href, text || '', title || ''),
+  isValidImageUrl: isValidImageURL,
+});
+
 const renderReply = (content: string) =>
   renderChatMarkdown(content || '', {
+    renderer: markdownRenderer,
     escapeMarkdown: safeMarkdownToHTML,
     sanitizeHtml: sanitizeMarkdownHTML,
   });

@@ -19,7 +19,7 @@ var versionedSQLiteTables = []string{
 	"system_settings",
 	"knowledge_processing_spans",
 	"knowledge_tag_relations",
-	"im_quick_replies", // 000087
+	"im_quick_replies", // 000089
 }
 
 // versionedSQLiteColumns maps each existing table to the columns that the
@@ -28,20 +28,20 @@ var versionedSQLiteColumns = map[string][]string{
 	"tenants":            {"api_principal_config"},           // 000064
 	"users":              {"is_system_admin"},                // 000053
 	"knowledges":         {"pending_subtasks_count"},         // 000056
-	"messages":           {"attachments"},                    // 000034
+	"messages":           {"attachments", "usage"},           // 000034, 000085
 	"tenant_invitations": {"token", "accepted_count"},        // 000054
 	"embed_channels":     {"allow_memory"},                   // 000060
 	"mcp_oauth_tokens":   {"principal_type", "principal_id"}, // 000064
-	"im_channels": {"handoff_config"}, // 000086
+	"im_channels":        {"handoff_config"},                 // 000088
 	"im_channel_sessions": {
-		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // 000085
-		"consecutive_failures", "handoff_notified_at", // 000086
-		"peer_name", "operator_unread_count", // 000087
-		"last_message_preview", "last_message_role", "last_message_at", // 000087
+		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // 000087
+		"consecutive_failures", "handoff_notified_at", // 000088
+		"peer_name", "operator_unread_count", // 000089
+		"last_message_preview", "last_message_role", "last_message_at", // 000089
 	},
 }
 
-const expectedSQLiteMigrationVersion = 14
+const expectedSQLiteMigrationVersion = 15
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)
