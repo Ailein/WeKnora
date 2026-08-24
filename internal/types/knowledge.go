@@ -33,6 +33,7 @@ const (
 	ChannelSlack            = "slack"             // Slack
 	ChannelIM               = "im"                // Generic IM channel
 	ChannelIMManual         = "im_manual"         // Operator manual reply relayed into an IM conversation
+	ChannelIMTakeover       = "im_takeover"       // IM user message received while an operator had taken the conversation over
 	ChannelNotion           = "notion"            // Notion
 	ChannelYuque            = "yuque"             // Yuque (语雀)
 	ChannelRSS              = "rss"               // RSS / Atom feed

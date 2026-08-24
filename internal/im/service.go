@@ -1882,6 +1882,12 @@ func (s *Service) HandleMessage(ctx context.Context, msg *IncomingMessage, chann
 		s.sessionService.GenerateTitleAsync(sessionCtx, &sessionForTitle, msg.Content, titleModelID, nil)
 	}
 
+	// Human takeover: when an operator holds the conversation, record the
+	// message for the console and stay silent — no QA, no reply of any kind.
+	if s.takeoverGate(sessionCtx, channelSession, session, msg) {
+		return nil
+	}
+
 	s.persistIMLastRequestState(sessionCtx, session.ID, agentID, customAgent, nil)
 
 	// 5. Enqueue the QA request into the bounded worker pool.

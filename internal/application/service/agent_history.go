@@ -76,14 +76,13 @@ func LoadAgentHistory(
 		createdAt time.Time
 	}
 	pairs := make(map[string]*pair)
-	var manualReplies []*types.Message
+	var sideNotes []*types.Message
 	for _, msg := range rows {
-		if msg.Role == "assistant" && msg.Channel == types.ChannelIMManual {
-			// Operator manual replies never have a paired user message; they
-			// are appended to the preceding turn's answer below instead.
-			if msg.IsCompleted {
-				manualReplies = append(manualReplies, msg)
-			}
+		if types.IsIMSideNote(msg) {
+			// Operator manual replies and takeover-period user messages never
+			// have a paired counterpart; they are appended to the preceding
+			// turn's answer below instead.
+			sideNotes = append(sideNotes, msg)
 			continue
 		}
 		p, ok := pairs[msg.RequestID]
@@ -121,7 +120,7 @@ func LoadAgentHistory(
 	for i, p := range completePairs {
 		turnStarts[i] = p.createdAt
 	}
-	suffixes := manualReplySuffixes(turnStarts, manualReplies)
+	suffixes := imSideNoteSuffixes(turnStarts, sideNotes)
 
 	out := make([]chat.Message, 0, len(completePairs)*4)
 	for i, p := range completePairs {
@@ -135,21 +134,21 @@ func LoadAgentHistory(
 	return out, nil
 }
 
-// manualReplySuffixes assigns each operator manual reply to the latest
-// retained turn that started at or before it and returns one ready-to-append
-// suffix per turn. Replies older than every retained turn are dropped: a lone
-// leading assistant message would break providers that require strictly
-// alternating roles, and the same policy keeps both history pipelines
-// consistent.
-func manualReplySuffixes(turnStarts []time.Time, manualReplies []*types.Message) []string {
+// imSideNoteSuffixes assigns each IM side note (operator manual reply or
+// takeover-period user message) to the latest retained turn that started at or
+// before it and returns one ready-to-append suffix per turn, in chronological
+// order. Notes older than every retained turn are dropped: a lone leading
+// assistant message would break providers that require strictly alternating
+// roles, and the same policy keeps both history pipelines consistent.
+func imSideNoteSuffixes(turnStarts []time.Time, sideNotes []*types.Message) []string {
 	suffixes := make([]string, len(turnStarts))
-	if len(turnStarts) == 0 || len(manualReplies) == 0 {
+	if len(turnStarts) == 0 || len(sideNotes) == 0 {
 		return suffixes
 	}
-	sort.SliceStable(manualReplies, func(i, j int) bool {
-		return manualReplies[i].CreatedAt.Before(manualReplies[j].CreatedAt)
+	sort.SliceStable(sideNotes, func(i, j int) bool {
+		return sideNotes[i].CreatedAt.Before(sideNotes[j].CreatedAt)
 	})
-	for _, m := range manualReplies {
+	for _, m := range sideNotes {
 		idx := -1
 		for i, start := range turnStarts {
 			if !start.After(m.CreatedAt) {
@@ -159,16 +158,16 @@ func manualReplySuffixes(turnStarts []time.Time, manualReplies []*types.Message)
 		if idx < 0 {
 			continue
 		}
-		text := types.ManualReplyHistoryText(m)
+		text := types.IMSideNoteHistoryText(m)
 		if text == "" {
 			continue
 		}
-		suffixes[idx] += "\n\n" + types.ManualReplyHistoryPrefix + text
+		suffixes[idx] += "\n\n" + text
 	}
 	return suffixes
 }
 
-// appendManualReplySuffix folds an operator-reply suffix into the turn's final
+// appendManualReplySuffix folds an IM side-note suffix into the turn's final
 // answer message, keeping the assistant/user alternation intact. When the turn
 // has no plain assistant message to extend (empty final answer), the suffix
 // becomes its own trailing assistant message.

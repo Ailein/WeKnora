@@ -1470,121 +1470,6 @@ definitions:
       secret_key:
         type: string
     type: object
-  github_com_Tencent_WeKnora_internal_types.Knowledge:
-    properties:
-      channel:
-        description: Channel indicates through which channel the knowledge was ingested
-          (web, api, browser_extension, wechat, etc.)
-        type: string
-      created_at:
-        description: Creation time of the knowledge
-        type: string
-      custom_metadata:
-        description: |-
-          CustomMetadata is user-authored descriptive metadata. It is deliberately
-          separate from Metadata, which contains internal ingestion state and IDs.
-        items:
-          type: integer
-        type: array
-      deleted_at:
-        allOf:
-        - $ref: '#/definitions/gorm.DeletedAt'
-        description: Deletion time of the knowledge
-      description:
-        description: Description of the knowledge
-        type: string
-      embedding_model_id:
-        description: ID of the embedding model
-        type: string
-      enable_status:
-        description: Enable status of the knowledge
-        type: string
-      error_message:
-        description: Error message of the knowledge
-        type: string
-      file_hash:
-        description: File hash of the knowledge
-        type: string
-      file_name:
-        description: File name of the knowledge
-        type: string
-      file_path:
-        description: File path of the knowledge
-        type: string
-      file_size:
-        description: File size of the knowledge
-        type: integer
-      file_type:
-        description: File type of the knowledge
-        type: string
-      folder_path:
-        description: |-
-          FolderPath is the canonical relative directory this entry belongs to
-          inside the knowledge base, e.g. "docs/spec" for a folder upload of
-          "docs/spec/design.md". Empty means the knowledge base root. It is a
-          display/navigation concern only: it never affects where the file is
-          physically stored (see FilePath).
-        type: string
-      id:
-        description: Unique identifier of the knowledge
-        type: string
-      knowledge_base_id:
-        description: ID of the knowledge base
-        type: string
-      knowledge_base_name:
-        description: Knowledge base name (not stored in database, populated on query)
-        type: string
-      last_faq_import_result:
-        description: Last FAQ import result (for FAQ type knowledge only)
-        items:
-          type: integer
-        type: array
-      metadata:
-        description: Metadata of the knowledge
-        items:
-          type: integer
-        type: array
-      parse_status:
-        description: Parse status of the knowledge
-        type: string
-      pending_subtasks_count:
-        description: |-
-          PendingSubtasksCount is the outstanding enrichment subtask count
-          (summary + question + graph chunks). Only meaningful while
-          ParseStatus == "finalizing"; defaults to 0 in any terminal state.
-        type: integer
-      processed_at:
-        description: Processed time of the knowledge
-        type: string
-      source:
-        description: Source of the knowledge (e.g. URL address for url type, "manual"
-          for manual type)
-        type: string
-      storage_size:
-        description: Storage size of the knowledge
-        type: integer
-      summary_status:
-        description: Summary status for async summary generation
-        type: string
-      tags:
-        description: Tags holds the tags associated with this knowledge (populated
-          on query, not persisted directly).
-        items:
-          $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.KnowledgeTag'
-        type: array
-      tenant_id:
-        description: Workspace ID
-        type: integer
-      title:
-        description: Title of the knowledge
-        type: string
-      type:
-        description: Type of the knowledge
-        type: string
-      updated_at:
-        description: Last updated time of the knowledge
-        type: string
-    type: object
   github_com_Tencent_WeKnora_internal_types.KnowledgeBase:
     properties:
       asr_config:
@@ -1872,36 +1757,6 @@ definitions:
         $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.QuestionGenerationConfig'
       vlm_config:
         $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.VLMConfig'
-    type: object
-  github_com_Tencent_WeKnora_internal_types.KnowledgeTag:
-    properties:
-      color:
-        description: Optional display color
-        type: string
-      created_at:
-        description: Creation time
-        type: string
-      id:
-        description: Unique identifier of the tag (UUID)
-        type: string
-      knowledge_base_id:
-        description: Knowledge base ID that this tag belongs to
-        type: string
-      name:
-        description: Tag name, unique within the same knowledge base
-        type: string
-      seq_id:
-        description: SeqID is an auto-increment integer ID for external API usage
-        type: integer
-      sort_order:
-        description: Sort order within the same knowledge base
-        type: integer
-      tenant_id:
-        description: Workspace ID
-        type: integer
-      updated_at:
-        description: Last updated time
-        type: string
     type: object
   github_com_Tencent_WeKnora_internal_types.ListMembersResponse:
     properties:
@@ -5777,6 +5632,17 @@ definitions:
     required:
     - name
     type: object
+  internal_handler.UpdateKnowledgeRequest:
+    properties:
+      custom_metadata:
+        items:
+          type: integer
+        type: array
+      description:
+        type: string
+      title:
+        type: string
+    type: object
   internal_handler.UpdateModelRequest:
     properties:
       description:
@@ -8049,6 +7915,145 @@ paths:
       summary: 启用/停用 IM 渠道
       tags:
       - IM 渠道
+  /im-sessions/{session_id}/handling:
+    get:
+      description: 返回会话绑定的 IM 对话当前由谁应答（bot/human）、接管到期时间与窗口时长
+      parameters:
+      - description: 会话 ID
+        in: path
+        name: session_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 接管状态
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 平台不支持接管
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: 会话未绑定 IM 对话
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: 对话已重置且无活跃后继
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 查询 IM 会话接管状态
+      tags:
+      - IM 渠道
+    put:
+      consumes:
+      - application/json
+      description: mode=human 时机器人对该对话静默（消息仍记录进会话），可选 timeout_minutes 设置无人工活动后自动恢复；mode=bot
+        立即交还机器人
+      parameters:
+      - description: 会话 ID
+        in: path
+        name: session_id
+        required: true
+        type: string
+      - description: mode（bot/human）与可选 timeout_minutes（0=不过期，5-1440）
+        in: body
+        name: request
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 更新后的接管状态
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: mode/timeout 非法或平台不支持
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: 会话未绑定 IM 对话
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: 对话已重置且无活跃后继
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 切换 IM 会话接管状态
+      tags:
+      - IM 渠道
+  /im-sessions/{session_id}/messages:
+    post:
+      consumes:
+      - application/json
+      - multipart/form-data
+      description: 以人工身份向指定会话绑定的 IM 对话直接发送消息（不触发 AI 回答），并记入会话历史。支持 JSON（纯文本）或 multipart/form-data（content
+        字段 + images/attachments 文件）
+      parameters:
+      - description: 会话 ID
+        in: path
+        name: session_id
+        required: true
+        type: string
+      - description: 消息内容（content）
+        in: body
+        name: request
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 已持久化的消息
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 内容为空/过长、附件超限或平台不支持
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: 会话未绑定 IM 对话
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: 渠道运行时不在本实例
+          schema:
+            additionalProperties: true
+            type: object
+        "502":
+          description: IM 平台投递失败
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: 发送 IM 人工回复
+      tags:
+      - IM 渠道
   /im/callback/{channel_id}:
     get:
       consumes:
@@ -10259,19 +10264,19 @@ paths:
     put:
       consumes:
       - application/json
-      description: 更新知识条目信息
+      description: 部分更新知识条目（标题/描述/自定义元数据）；未传字段保持不变，显式传空 description 可清空摘要
       parameters:
       - description: 知识ID
         in: path
         name: id
         required: true
         type: string
-      - description: 知识信息
+      - description: 更新字段（均可选）
         in: body
         name: request
         required: true
         schema:
-          $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.Knowledge'
+          $ref: '#/definitions/internal_handler.UpdateKnowledgeRequest'
       produces:
       - application/json
       responses:

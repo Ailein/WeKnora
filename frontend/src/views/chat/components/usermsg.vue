@@ -109,6 +109,8 @@ const channelLabelMap = {
     web: () => t('chat.channelWeb'),
     api: () => t('chat.channelApi'),
     im: () => t('chat.channelIm'),
+    // 人工接管期间收到的 IM 用户消息（机器人静默，仅记录）。
+    im_takeover: () => t('chat.channelImTakeover'),
 };
 
 const channelLabel = computed(() => {
@@ -346,6 +348,12 @@ const closePreImg = () => {
         color: var(--td-warning-color);
         background: var(--td-warning-color-1, rgba(237, 123, 0, 0.06));
         border-color: var(--td-warning-color-2, rgba(237, 123, 0, 0.15));
+    }
+
+    &.channel-im_takeover {
+        color: var(--td-brand-color);
+        background: var(--td-brand-color-1, #f2f3ff);
+        border-color: var(--td-brand-color-2, rgba(0, 82, 217, 0.1));
     }
 }
 

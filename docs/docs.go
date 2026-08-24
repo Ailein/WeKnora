@@ -2836,6 +2836,215 @@ const docTemplate = `{
                 }
             }
         },
+        "/im-sessions/{session_id}/handling": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "返回会话绑定的 IM 对话当前由谁应答（bot/human）、接管到期时间与窗口时长",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "查询 IM 会话接管状态",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "会话 ID",
+                        "name": "session_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "接管状态",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "平台不支持接管",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "会话未绑定 IM 对话",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "对话已重置且无活跃后继",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "mode=human 时机器人对该对话静默（消息仍记录进会话），可选 timeout_minutes 设置无人工活动后自动恢复；mode=bot 立即交还机器人",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "切换 IM 会话接管状态",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "会话 ID",
+                        "name": "session_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "mode（bot/human）与可选 timeout_minutes（0=不过期，5-1440）",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "更新后的接管状态",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "mode/timeout 非法或平台不支持",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "会话未绑定 IM 对话",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "对话已重置且无活跃后继",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/im-sessions/{session_id}/messages": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "以人工身份向指定会话绑定的 IM 对话直接发送消息（不触发 AI 回答），并记入会话历史。支持 JSON（纯文本）或 multipart/form-data（content 字段 + images/attachments 文件）",
+                "consumes": [
+                    "application/json",
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IM 渠道"
+                ],
+                "summary": "发送 IM 人工回复",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "会话 ID",
+                        "name": "session_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "消息内容（content）",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "已持久化的消息",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "内容为空/过长、附件超限或平台不支持",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "会话未绑定 IM 对话",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "渠道运行时不在本实例",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "502": {
+                        "description": "IM 平台投递失败",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/im/callback/{channel_id}": {
             "get": {
                 "description": "接收各 IM 平台的事件回调；走平台自身签名校验，不使用 API Key",
@@ -6856,7 +7065,7 @@ const docTemplate = `{
                         "ApiKeyAuth": []
                     }
                 ],
-                "description": "更新知识条目信息",
+                "description": "部分更新知识条目（标题/描述/自定义元数据）；未传字段保持不变，显式传空 description 可清空摘要",
                 "consumes": [
                     "application/json"
                 ],
@@ -6876,12 +7085,12 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "知识信息",
+                        "description": "更新字段（均可选）",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.Knowledge"
+                            "$ref": "#/definitions/internal_handler.UpdateKnowledgeRequest"
                         }
                     }
                 ],
@@ -17874,147 +18083,6 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_Tencent_WeKnora_internal_types.Knowledge": {
-            "type": "object",
-            "properties": {
-                "channel": {
-                    "description": "Channel indicates through which channel the knowledge was ingested (web, api, browser_extension, wechat, etc.)",
-                    "type": "string"
-                },
-                "created_at": {
-                    "description": "Creation time of the knowledge",
-                    "type": "string"
-                },
-                "custom_metadata": {
-                    "description": "CustomMetadata is user-authored descriptive metadata. It is deliberately\nseparate from Metadata, which contains internal ingestion state and IDs.",
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
-                },
-                "deleted_at": {
-                    "description": "Deletion time of the knowledge",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/gorm.DeletedAt"
-                        }
-                    ]
-                },
-                "description": {
-                    "description": "Description of the knowledge",
-                    "type": "string"
-                },
-                "embedding_model_id": {
-                    "description": "ID of the embedding model",
-                    "type": "string"
-                },
-                "enable_status": {
-                    "description": "Enable status of the knowledge",
-                    "type": "string"
-                },
-                "error_message": {
-                    "description": "Error message of the knowledge",
-                    "type": "string"
-                },
-                "file_hash": {
-                    "description": "File hash of the knowledge",
-                    "type": "string"
-                },
-                "file_name": {
-                    "description": "File name of the knowledge",
-                    "type": "string"
-                },
-                "file_path": {
-                    "description": "File path of the knowledge",
-                    "type": "string"
-                },
-                "file_size": {
-                    "description": "File size of the knowledge",
-                    "type": "integer"
-                },
-                "file_type": {
-                    "description": "File type of the knowledge",
-                    "type": "string"
-                },
-                "folder_path": {
-                    "description": "FolderPath is the canonical relative directory this entry belongs to\ninside the knowledge base, e.g. \"docs/spec\" for a folder upload of\n\"docs/spec/design.md\". Empty means the knowledge base root. It is a\ndisplay/navigation concern only: it never affects where the file is\nphysically stored (see FilePath).",
-                    "type": "string"
-                },
-                "id": {
-                    "description": "Unique identifier of the knowledge",
-                    "type": "string"
-                },
-                "knowledge_base_id": {
-                    "description": "ID of the knowledge base",
-                    "type": "string"
-                },
-                "knowledge_base_name": {
-                    "description": "Knowledge base name (not stored in database, populated on query)",
-                    "type": "string"
-                },
-                "last_faq_import_result": {
-                    "description": "Last FAQ import result (for FAQ type knowledge only)",
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
-                },
-                "metadata": {
-                    "description": "Metadata of the knowledge",
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
-                },
-                "parse_status": {
-                    "description": "Parse status of the knowledge",
-                    "type": "string"
-                },
-                "pending_subtasks_count": {
-                    "description": "PendingSubtasksCount is the outstanding enrichment subtask count\n(summary + question + graph chunks). Only meaningful while\nParseStatus == \"finalizing\"; defaults to 0 in any terminal state.",
-                    "type": "integer"
-                },
-                "processed_at": {
-                    "description": "Processed time of the knowledge",
-                    "type": "string"
-                },
-                "source": {
-                    "description": "Source of the knowledge (e.g. URL address for url type, \"manual\" for manual type)",
-                    "type": "string"
-                },
-                "storage_size": {
-                    "description": "Storage size of the knowledge",
-                    "type": "integer"
-                },
-                "summary_status": {
-                    "description": "Summary status for async summary generation",
-                    "type": "string"
-                },
-                "tags": {
-                    "description": "Tags holds the tags associated with this knowledge (populated on query, not persisted directly).",
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.KnowledgeTag"
-                    }
-                },
-                "tenant_id": {
-                    "description": "Workspace ID",
-                    "type": "integer"
-                },
-                "title": {
-                    "description": "Title of the knowledge",
-                    "type": "string"
-                },
-                "type": {
-                    "description": "Type of the knowledge",
-                    "type": "string"
-                },
-                "updated_at": {
-                    "description": "Last updated time of the knowledge",
-                    "type": "string"
-                }
-            }
-        },
         "github_com_Tencent_WeKnora_internal_types.KnowledgeBase": {
             "type": "object",
             "properties": {
@@ -18402,47 +18470,6 @@ const docTemplate = `{
                 },
                 "vlm_config": {
                     "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.VLMConfig"
-                }
-            }
-        },
-        "github_com_Tencent_WeKnora_internal_types.KnowledgeTag": {
-            "type": "object",
-            "properties": {
-                "color": {
-                    "description": "Optional display color",
-                    "type": "string"
-                },
-                "created_at": {
-                    "description": "Creation time",
-                    "type": "string"
-                },
-                "id": {
-                    "description": "Unique identifier of the tag (UUID)",
-                    "type": "string"
-                },
-                "knowledge_base_id": {
-                    "description": "Knowledge base ID that this tag belongs to",
-                    "type": "string"
-                },
-                "name": {
-                    "description": "Tag name, unique within the same knowledge base",
-                    "type": "string"
-                },
-                "seq_id": {
-                    "description": "SeqID is an auto-increment integer ID for external API usage",
-                    "type": "integer"
-                },
-                "sort_order": {
-                    "description": "Sort order within the same knowledge base",
-                    "type": "integer"
-                },
-                "tenant_id": {
-                    "description": "Workspace ID",
-                    "type": "integer"
-                },
-                "updated_at": {
-                    "description": "Last updated time",
-                    "type": "string"
                 }
             }
         },
@@ -23553,6 +23580,23 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handler.UpdateKnowledgeRequest": {
+            "type": "object",
+            "properties": {
+                "custom_metadata": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "title": {
                     "type": "string"
                 }
             }

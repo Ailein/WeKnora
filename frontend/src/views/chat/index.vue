@@ -111,9 +111,24 @@
             </div>
         </transition>
         <div class="input-container" :class="{ 'is-embedded': embeddedMode }">
-            <div v-if="isManualImSession" class="manual-im-banner">
+            <div v-if="isManualImSession" class="manual-im-banner" :class="{ 'is-human': imHandlingMode === 'human' }">
                 <t-icon name="user-talk" />
-                <span>{{ t('chat.imManualBanner', { platform: manualImPlatformLabel }) }}</span>
+                <span class="manual-im-banner__text">{{ imHandlingMode === 'human'
+                    ? imTakeoverActiveText
+                    : t('chat.imManualBanner', { platform: manualImPlatformLabel }) }}</span>
+                <template v-if="imHandlingLoaded">
+                    <t-dropdown v-if="imHandlingMode !== 'human'" trigger="click" placement="top-right" attach="body"
+                        :options="imTakeoverDurationOptions" @click="handleImTakeoverStart">
+                        <t-button size="small" theme="warning" variant="outline" :loading="imHandlingSaving"
+                            class="manual-im-banner__action">
+                            {{ t('chat.imTakeoverStart') }}
+                        </t-button>
+                    </t-dropdown>
+                    <t-button v-else size="small" theme="primary" variant="outline" :loading="imHandlingSaving"
+                        class="manual-im-banner__action" @click="handleImTakeoverRelease">
+                        {{ t('chat.imTakeoverRelease') }}
+                    </t-button>
+                </template>
             </div>
             <InputField ref="inputFieldRef"
                 @send-msg="(query, modelId, mentionedItems, imageFiles, attachmentFiles) => sendMsg(query, modelId, mentionedItems, imageFiles, attachmentFiles)"
@@ -135,7 +150,7 @@ import { useRoute, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router';
 import InputField from '../../components/Input-field.vue';
 import botmsg from './components/botmsg.vue';
 import usermsg from './components/usermsg.vue';
-import { getMessageList, getSession, sendImManualReply } from "@/api/chat/index";
+import { getMessageList, getSession, sendImManualReply, getImSessionHandling, setImSessionHandling } from "@/api/chat/index";
 import { getSuggestedQuestions } from "@/api/agent/index";
 import { deleteTemporaryAttachment, uploadTemporaryAttachment } from '@/api/chat/temporary-attachments';
 import { useStream } from '../../api/chat/streame'
@@ -235,6 +250,83 @@ const manualImPlatformLabel = computed(() => {
 });
 const manualReplySending = ref(false);
 
+// ===== 人工接管（bot 静默）=====
+// 接管后机器人对该对话完全静默：消息仍记录进会话历史，但不再触发 QA。
+// mode: '' = 未加载（隐藏按钮，仅显示提示文案），'bot' | 'human'。
+const imHandlingMode = ref('');
+const imHandlingExpiresAt = ref(null);
+const imHandlingSaving = ref(false);
+const imHandlingLoaded = computed(() => imHandlingMode.value !== '');
+
+const imTakeoverDurationOptions = computed(() => ([
+    { content: t('chat.imTakeoverFor30m'), value: 30 },
+    { content: t('chat.imTakeoverFor1h'), value: 60 },
+    { content: t('chat.imTakeoverFor4h'), value: 240 },
+    { content: t('chat.imTakeoverIndefinite'), value: 0 },
+]));
+
+const imTakeoverActiveText = computed(() => {
+    if (!imHandlingExpiresAt.value) return t('chat.imTakeoverActive');
+    const until = new Date(imHandlingExpiresAt.value);
+    if (Number.isNaN(until.getTime())) return t('chat.imTakeoverActive');
+    const now = new Date();
+    const hhmm = `${String(until.getHours()).padStart(2, '0')}:${String(until.getMinutes()).padStart(2, '0')}`;
+    // 跨天的窗口（如 4 小时后是明天）补上日期，避免"到 02:30"被读成今天。
+    const sameDay = until.getFullYear() === now.getFullYear()
+        && until.getMonth() === now.getMonth() && until.getDate() === now.getDate();
+    const time = sameDay ? hhmm : `${until.getMonth() + 1}/${until.getDate()} ${hhmm}`;
+    return t('chat.imTakeoverActiveUntil', { time });
+});
+
+const loadImHandling = async (sid) => {
+    imHandlingMode.value = '';
+    imHandlingExpiresAt.value = null;
+    if (!sid || !isManualImSession.value) return;
+    try {
+        const res = await getImSessionHandling(sid);
+        if (sid !== session_id.value) return; // 会话已切换，丢弃过期响应
+        if (res?.data?.mode) {
+            imHandlingMode.value = res.data.mode;
+            imHandlingExpiresAt.value = res.data.expires_at || null;
+        }
+    } catch (e) {
+        // 拿不到状态（如对话已被 /clear 重置且无后继）时只隐藏开关，不打扰操作者。
+        console.warn('[IM Takeover] load state failed:', e);
+    }
+};
+
+const handleImTakeoverStart = async (option) => {
+    if (imHandlingSaving.value) return;
+    imHandlingSaving.value = true;
+    try {
+        const res = await setImSessionHandling(session_id.value, 'human', option?.value);
+        imHandlingMode.value = res?.data?.mode || 'human';
+        imHandlingExpiresAt.value = res?.data?.expires_at || null;
+        MessagePlugin.success(t('chat.imTakeoverStarted'));
+    } catch (e) {
+        console.error('[IM Takeover] start failed:', e);
+        MessagePlugin.error(e?.message || e?.error || t('chat.imTakeoverFailed'));
+    } finally {
+        imHandlingSaving.value = false;
+    }
+};
+
+const handleImTakeoverRelease = async () => {
+    if (imHandlingSaving.value) return;
+    imHandlingSaving.value = true;
+    try {
+        const res = await setImSessionHandling(session_id.value, 'bot');
+        imHandlingMode.value = res?.data?.mode || 'bot';
+        imHandlingExpiresAt.value = null;
+        MessagePlugin.success(t('chat.imTakeoverReleased'));
+    } catch (e) {
+        console.error('[IM Takeover] release failed:', e);
+        MessagePlugin.error(e?.message || e?.error || t('chat.imTakeoverFailed'));
+    } finally {
+        imHandlingSaving.value = false;
+    }
+};
+
 const sendManualImReply = async (value, imageFiles = [], attachmentFiles = []) => {
     if (manualReplySending.value) return;
     manualReplySending.value = true;
@@ -265,10 +357,15 @@ const sendManualImReply = async (value, imageFiles = [], attachmentFiles = []) =
 // 避免污染宿主的 settings store。
 const loadSessionAndHydrate = async (sid) => {
     if (!sid || props.embeddedMode) return;
+    // 先清掉上一个会话的接管状态，避免加载失败时残留旧按钮。
+    imHandlingMode.value = '';
+    imHandlingExpiresAt.value = null;
     try {
         const sessionRes = await getSession(sid);
         if (sessionRes?.data && sid === session_id.value) {
             currentSession.value = sessionRes.data;
+            // isManualImSession 依赖 currentSession，需在赋值后再拉接管状态。
+            loadImHandling(sid);
             const lastState = sessionRes.data.last_request_state;
             if (lastState) {
                 // 先把当前的"全局默认"快照下来，再用 session 状态覆盖；
@@ -1289,6 +1386,22 @@ onBeforeRouteUpdate((to, from, next) => {
     .t-icon {
         flex-shrink: 0;
         font-size: 14px;
+    }
+
+    .manual-im-banner__text {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .manual-im-banner__action {
+        flex-shrink: 0;
+    }
+
+    // 接管中：换成醒目的"人工持有"配色，让操作者一眼看出机器人已静默。
+    &.is-human {
+        color: var(--td-brand-color-7, #0052d9);
+        background: var(--td-brand-color-1, #f2f3ff);
+        border-color: var(--td-brand-color-3, #b5c7ff);
     }
 }
 

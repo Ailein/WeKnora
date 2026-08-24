@@ -437,6 +437,111 @@ func (h *IMHandler) SendIMSessionReply(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": msg})
 }
 
+// writeIMHandlingError maps takeover-state failures onto precise status codes
+// shared by the GET and PUT endpoints.
+func writeIMHandlingError(c *gin.Context, sessionID string, err error) {
+	switch {
+	case errors.Is(err, im.ErrHandlingUnsupported),
+		errors.Is(err, im.ErrHandlingInvalidMode),
+		errors.Is(err, im.ErrHandlingInvalidTimeout):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case errors.Is(err, im.ErrHandlingNotIMSession):
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	case errors.Is(err, im.ErrHandlingConversationGone):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	default:
+		logger.Errorf(c.Request.Context(), "[IM] Session handling request failed for session %s: %v", sessionID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process session handling"})
+	}
+}
+
+// GetIMSessionHandling reports whether the conversation bound to a session is
+// answered by the bot or held by a human operator.
+//
+// GetIMSessionHandling godoc
+// @Summary      查询 IM 会话接管状态
+// @Description  返回会话绑定的 IM 对话当前由谁应答（bot/human）、接管到期时间与窗口时长
+// @Tags         IM 渠道
+// @Produce      json
+// @Param        session_id  path      string                  true  "会话 ID"
+// @Success      200         {object}  map[string]interface{}  "接管状态"
+// @Failure      400         {object}  map[string]interface{}  "平台不支持接管"
+// @Failure      404         {object}  map[string]interface{}  "会话未绑定 IM 对话"
+// @Failure      409         {object}  map[string]interface{}  "对话已重置且无活跃后继"
+// @Security     Bearer
+// @Security     ApiKeyAuth
+// @Router       /im-sessions/{session_id}/handling [get]
+func (h *IMHandler) GetIMSessionHandling(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session id is required"})
+		return
+	}
+	tenantID, ok := c.Request.Context().Value(types.TenantIDContextKey).(uint64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	handling, err := h.imService.GetSessionHandling(c.Request.Context(), tenantID, sessionID)
+	if err != nil {
+		writeIMHandlingError(c, sessionID, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": handling})
+}
+
+// SetIMSessionHandling switches the conversation bound to a session between
+// bot handling and human takeover. Admin-only, like manual replies: it mutes
+// or unmutes the bot for an external IM user.
+//
+// SetIMSessionHandling godoc
+// @Summary      切换 IM 会话接管状态
+// @Description  mode=human 时机器人对该对话静默（消息仍记录进会话），可选 timeout_minutes 设置无人工活动后自动恢复；mode=bot 立即交还机器人
+// @Tags         IM 渠道
+// @Accept       json
+// @Produce      json
+// @Param        session_id  path      string                  true  "会话 ID"
+// @Param        request     body      map[string]interface{}  true  "mode（bot/human）与可选 timeout_minutes（0=不过期，5-1440）"
+// @Success      200         {object}  map[string]interface{}  "更新后的接管状态"
+// @Failure      400         {object}  map[string]interface{}  "mode/timeout 非法或平台不支持"
+// @Failure      404         {object}  map[string]interface{}  "会话未绑定 IM 对话"
+// @Failure      409         {object}  map[string]interface{}  "对话已重置且无活跃后继"
+// @Security     Bearer
+// @Security     ApiKeyAuth
+// @Router       /im-sessions/{session_id}/handling [put]
+func (h *IMHandler) SetIMSessionHandling(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session id is required"})
+		return
+	}
+	tenantID, ok := c.Request.Context().Value(types.TenantIDContextKey).(uint64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		Mode string `json:"mode"`
+		// Pointer distinguishes "omitted" (default window) from an explicit 0
+		// (takeover with no expiry).
+		TimeoutMinutes *int `json:"timeout_minutes"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	timeout := -1 // service substitutes the default window
+	if req.TimeoutMinutes != nil {
+		timeout = *req.TimeoutMinutes
+	}
+	handling, err := h.imService.SetSessionHandling(c.Request.Context(), tenantID, sessionID, req.Mode, timeout)
+	if err != nil {
+		writeIMHandlingError(c, sessionID, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": handling})
+}
+
 // parseManualReplyRequest accepts both the JSON body used for text-only
 // replies and multipart/form-data — a "content" field plus files under
 // "images" (must be image/*, delivered inline) and "attachments" (delivered

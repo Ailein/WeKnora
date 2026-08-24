@@ -117,6 +117,24 @@ imService.RegisterAdapterFactory("whatsapp", whatsapp.NewFactory(db)) // 需要 
 
 Webhook 模式的接入方式就是把 `https://<你的域名>/api/v1/im/callback/<channel_id>` 填到平台的事件订阅/回调地址处；WeKnora 会先响应平台的 URL 验证挑战（`HandleURLVerification`，如飞书的 challenge 回显、企微的 echostr 解密），之后每个回调都过 `VerifyCallback` 签名校验。WebSocket/长连接模式则无需公网回调地址，由 WeKnora 主动连接平台网关。
 
+### 人工回复与人工接管（internal/im/manual_reply.go + takeover.go）
+
+对支持的平台（当前为 WhatsApp），管理员可以在 Web 控制台里直接参与 IM 对话：
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/v1/im-sessions/:session_id/messages` | **人工回复**（Admin+）：以机器人身份把操作者输入的文本/图片/文档直接发给 IM 对方，不触发 AI 回答；成功投递后记录为 `channel=im_manual` 的 assistant 消息 |
+| `GET /api/v1/im-sessions/:session_id/handling` | 查询会话当前由谁应答（`bot` / `human`）及自动恢复时间 |
+| `PUT /api/v1/im-sessions/:session_id/handling` | **人工接管**（Admin+）：`{"mode":"human","timeout_minutes":60}` 让机器人对该对话静默；`{"mode":"bot"}` 立即交还 |
+
+接管期间：
+
+- 机器人完全静默 —— 不回答、不发排队提示；用户消息仍会记录进会话历史（`channel=im_takeover`），供操作者在控制台查看。
+- 斜杠指令（`/help`、`/clear` 等）仍然生效；注意用户发 `/clear` 会重建映射并回到 bot 模式。
+- `timeout_minutes` 为自动恢复窗口（0 = 直到手动交还，默认 60，范围 5–1440）：窗口内每次人工回复都会把到期时间刷新为「现在 + 窗口」，避免机器人在人工对话中途插话。
+- 机器人恢复后，两条历史管线会把接管期间的用户消息与人工回复按时间顺序折叠进上一轮回答（前缀 `[用户消息（人工接管期间）]` / `[人工客服回复]`），保证后续 AI 回答知道人工阶段聊了什么。
+- 接管状态存在**当前存活**的 `ChannelSession` 上：即使操作者是在被 `/clear` 归档的历史会话里点的接管，也会自动落到该用户当前活跃的对话上。
+
 ### 长连接的可靠性：leader 选举与 Supervisor
 
 - **多实例 leader 选举**（`service.go`）：websocket/longpoll 渠道在多实例部署（有 Redis）时，通过 `SETNX im:ws:leader:<channelID>`（TTL 15s，每 5s 续期）保证**只有一个实例**维持长连接；非 leader 实例每 10s 重试抢锁，leader 宕机后自动接管。longpoll 渠道停止时刻意不立即释放锁，等 TTL 自然过期，避免新旧实例短暂双写。续期失败（丢失 leader 身份）时走 `handleWSLeadershipLoss`：先停掉本实例的适配器，再把渠道放回抢锁重试循环——重试前会重新读一次数据库中的渠道行，因此期间被删除、禁用或改配置的渠道不会被旧运行时复活。

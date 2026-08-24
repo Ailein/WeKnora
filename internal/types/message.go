@@ -147,6 +147,51 @@ func (attachments MessageAttachments) BuildPrompt() string {
 // Chinese per the history-assembly convention.
 const ManualReplyHistoryPrefix = "[人工客服回复] "
 
+// TakeoverUserHistoryPrefix labels an IM user message that arrived while an
+// operator had taken the conversation over (Channel == ChannelIMTakeover).
+// Such messages have no paired assistant answer, so history assembly folds
+// them into the preceding turn the same way operator replies are folded in.
+const TakeoverUserHistoryPrefix = "[用户消息（人工接管期间）] "
+
+// IsIMSideNote reports whether a stored message is an out-of-band IM
+// conversation note: an operator manual reply, or a user message recorded
+// while the bot was silenced by a human takeover. Neither participates in the
+// user/assistant pairing that history assembly performs; both are appended to
+// the preceding turn's answer instead (see LoadAgentHistory and
+// loadAndProcessHistory).
+func IsIMSideNote(m *Message) bool {
+	if m == nil || !m.IsCompleted {
+		return false
+	}
+	switch {
+	case m.Role == "assistant" && m.Channel == ChannelIMManual:
+		return true
+	case m.Role == "user" && m.Channel == ChannelIMTakeover:
+		return true
+	}
+	return false
+}
+
+// IMSideNoteHistoryText renders an IM side note (see IsIMSideNote) for LLM
+// history replay, including the speaker prefix. Returns "" when the note has
+// no representable content.
+func IMSideNoteHistoryText(m *Message) string {
+	if m == nil {
+		return ""
+	}
+	switch {
+	case m.Role == "assistant" && m.Channel == ChannelIMManual:
+		if text := ManualReplyHistoryText(m); text != "" {
+			return ManualReplyHistoryPrefix + text
+		}
+	case m.Role == "user" && m.Channel == ChannelIMTakeover:
+		if c := strings.TrimSpace(m.Content); c != "" {
+			return TakeoverUserHistoryPrefix + c
+		}
+	}
+	return ""
+}
+
 // ManualReplyHistoryText renders an operator manual reply (Channel ==
 // ChannelIMManual) for LLM history replay: the reply text plus terse notes for
 // media the history cannot inline. Media notes follow the hardcoded-Chinese

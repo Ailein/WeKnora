@@ -241,6 +241,10 @@ func (s *Service) SendManualReply(
 		logger.Warnf(ctx, "[IM] Failed to bump session %s after manual reply: %v", sessionID, err)
 	}
 
+	// An operator reply is takeover activity: push the auto-resume window out
+	// so the bot never barges into the ongoing human conversation.
+	s.extendTakeoverAfterManualReply(ctx, tenantID, sessionID)
+
 	logger.Infof(ctx, "[IM] Manual reply sent: platform=%s channel=%s session=%s chars=%d attachments=%d",
 		cs.Platform, cs.IMChannelID, sessionID, len([]rune(content)), len(attachments))
 	return msg, nil

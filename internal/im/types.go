@@ -238,20 +238,32 @@ func (ch *IMChannel) computeBotIdentity() string {
 // ChannelSession maps an IM channel (user+chat combination) to a WeKnora session.
 // This allows the IM integration to maintain conversation continuity.
 type ChannelSession struct {
-	ID          string         `json:"id"            gorm:"type:varchar(36);primaryKey;default:uuid_generate_v4()"`
-	Platform    string         `json:"platform"      gorm:"type:varchar(20);not null"`
-	UserID      string         `json:"user_id"       gorm:"type:varchar(128);not null"`
-	ChatID      string         `json:"chat_id"       gorm:"type:varchar(128);not null;default:''"`
-	ThreadID    string         `json:"thread_id"     gorm:"type:varchar(128);not null;default:''"`
-	SessionID   string         `json:"session_id"    gorm:"type:varchar(36);not null;index"`
-	TenantID    uint64         `json:"tenant_id"     gorm:"not null;index"`
-	AgentID     string         `json:"agent_id"      gorm:"type:varchar(36);default:''"`
-	IMChannelID string         `json:"im_channel_id" gorm:"type:varchar(36);default:''"`
-	Status      string         `json:"status"        gorm:"type:varchar(20);not null;default:'active'"`
-	Metadata    types.JSON     `json:"metadata"      gorm:"type:jsonb;default:'{}'"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `json:"deleted_at"    gorm:"index"`
+	ID          string `json:"id"            gorm:"type:varchar(36);primaryKey;default:uuid_generate_v4()"`
+	Platform    string `json:"platform"      gorm:"type:varchar(20);not null"`
+	UserID      string `json:"user_id"       gorm:"type:varchar(128);not null"`
+	ChatID      string `json:"chat_id"       gorm:"type:varchar(128);not null;default:''"`
+	ThreadID    string `json:"thread_id"     gorm:"type:varchar(128);not null;default:''"`
+	SessionID   string `json:"session_id"    gorm:"type:varchar(36);not null;index"`
+	TenantID    uint64 `json:"tenant_id"     gorm:"not null;index"`
+	AgentID     string `json:"agent_id"      gorm:"type:varchar(36);default:''"`
+	IMChannelID string `json:"im_channel_id" gorm:"type:varchar(36);default:''"`
+	Status      string `json:"status"        gorm:"type:varchar(20);not null;default:'active'"`
+	// HandlingMode is who answers this conversation: HandlingModeBot (default,
+	// the QA pipeline replies) or HandlingModeHuman (an operator took over —
+	// inbound messages are recorded but the bot stays silent).
+	HandlingMode string `json:"handling_mode" gorm:"type:varchar(20);not null;default:'bot'"`
+	// HandlingExpiresAt, when set in human mode, is the moment the conversation
+	// automatically falls back to the bot. Nil in human mode means the takeover
+	// lasts until an operator releases it. Always nil in bot mode.
+	HandlingExpiresAt *time.Time `json:"handling_expires_at"`
+	// HandlingTimeoutMinutes is the takeover window length chosen by the
+	// operator; each manual reply refreshes HandlingExpiresAt to now+timeout so
+	// the bot never barges into an ongoing human conversation. 0 = no expiry.
+	HandlingTimeoutMinutes int            `json:"handling_timeout_minutes" gorm:"not null;default:0"`
+	Metadata               types.JSON     `json:"metadata"      gorm:"type:jsonb;default:'{}'"`
+	CreatedAt              time.Time      `json:"created_at"`
+	UpdatedAt              time.Time      `json:"updated_at"`
+	DeletedAt              gorm.DeletedAt `json:"deleted_at"    gorm:"index"`
 }
 
 func (ChannelSession) TableName() string {
@@ -264,6 +276,9 @@ func (cs *ChannelSession) BeforeCreate(tx *gorm.DB) error {
 	}
 	if cs.Status == "" {
 		cs.Status = "active"
+	}
+	if cs.HandlingMode == "" {
+		cs.HandlingMode = HandlingModeBot
 	}
 	return nil
 }

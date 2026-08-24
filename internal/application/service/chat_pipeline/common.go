@@ -155,14 +155,13 @@ func loadAndProcessHistory(
 	}
 
 	historyMap := make(map[string]*types.History)
-	var manualReplies []*types.Message
+	var sideNotes []*types.Message
 	for _, message := range history {
-		if message.Role == "assistant" && message.Channel == types.ChannelIMManual {
-			// Operator manual replies never pair with a user message; they are
-			// appended to the preceding turn's answer after truncation below.
-			if message.IsCompleted {
-				manualReplies = append(manualReplies, message)
-			}
+		if types.IsIMSideNote(message) {
+			// Operator manual replies and takeover-period user messages never
+			// pair; they are appended to the preceding turn's answer after
+			// truncation below.
+			sideNotes = append(sideNotes, message)
 			continue
 		}
 		h, ok := historyMap[message.RequestID]
@@ -206,23 +205,24 @@ func loadAndProcessHistory(
 	}
 
 	slices.Reverse(historyList)
-	attachManualRepliesToHistory(historyList, manualReplies)
+	attachIMSideNotesToHistory(historyList, sideNotes)
 	return historyList, nil
 }
 
-// attachManualRepliesToHistory appends operator manual replies to the answer
-// of the latest retained turn that started at or before each reply, so the
-// bot's next answer knows what the operator already told the user. Replies
-// with no preceding retained turn are dropped — the pair-based History shape
-// has no alternation-safe place for them (same policy as LoadAgentHistory).
-func attachManualRepliesToHistory(historyList []*types.History, manualReplies []*types.Message) {
-	if len(historyList) == 0 || len(manualReplies) == 0 {
+// attachIMSideNotesToHistory appends IM side notes (operator manual replies
+// and takeover-period user messages) to the answer of the latest retained turn
+// that started at or before each note, so the bot's next answer knows what was
+// said while it was not the one answering. Notes with no preceding retained
+// turn are dropped — the pair-based History shape has no alternation-safe
+// place for them (same policy as LoadAgentHistory).
+func attachIMSideNotesToHistory(historyList []*types.History, sideNotes []*types.Message) {
+	if len(historyList) == 0 || len(sideNotes) == 0 {
 		return
 	}
-	sort.SliceStable(manualReplies, func(i, j int) bool {
-		return manualReplies[i].CreatedAt.Before(manualReplies[j].CreatedAt)
+	sort.SliceStable(sideNotes, func(i, j int) bool {
+		return sideNotes[i].CreatedAt.Before(sideNotes[j].CreatedAt)
 	})
-	for _, m := range manualReplies {
+	for _, m := range sideNotes {
 		var target *types.History
 		for _, h := range historyList {
 			if !h.CreateAt.After(m.CreatedAt) {
@@ -232,11 +232,11 @@ func attachManualRepliesToHistory(historyList []*types.History, manualReplies []
 		if target == nil {
 			continue
 		}
-		text := types.ManualReplyHistoryText(m)
+		text := types.IMSideNoteHistoryText(m)
 		if text == "" {
 			continue
 		}
-		target.Answer += "\n\n" + types.ManualReplyHistoryPrefix + text
+		target.Answer += "\n\n" + text
 	}
 }
 

@@ -301,10 +301,15 @@ func RegisterIMChannelRoutes(r *gin.RouterGroup, imHandler *handler.IMHandler, g
 	}
 
 	// Operator manual replies into IM-bound sessions — Admin+: the message is
-	// delivered to an external IM user under the bot's identity.
+	// delivered to an external IM user under the bot's identity. The takeover
+	// endpoints are Admin+ too: muting the bot for an external conversation is
+	// the same trust level as speaking as it (and non-admins cannot open IM
+	// sessions in the console anyway).
 	imSessions := g.apiKeyGroup(r.Group("/im-sessions"), apiKeyManageChannels(apiKeyFullAccess()))
 	{
 		imSessions.POST("/:session_id/messages", g.Admin(), imHandler.SendIMSessionReply)
+		imSessions.GET("/:session_id/handling", g.Admin(), imHandler.GetIMSessionHandling)
+		imSessions.PUT("/:session_id/handling", g.Admin(), imHandler.SetIMSessionHandling)
 	}
 
 	// WeChat QR code login (requires authentication) — Admin+: a successful

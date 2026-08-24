@@ -69,6 +69,26 @@ export async function sendImManualReply(
   return postUpload(`/api/v1/im-sessions/${session_id}/messages`, form);
 }
 
+// Human takeover state for IM-bound sessions: who answers the conversation
+// ("bot" | "human"), with an optional auto-resume window. Admin-only.
+export async function getImSessionHandling(session_id: string) {
+  return get(`/api/v1/im-sessions/${session_id}/handling`);
+}
+
+// mode="human" silences the bot (messages are still recorded); timeoutMinutes
+// 0 = until manually released, undefined = server default window.
+export async function setImSessionHandling(
+  session_id: string,
+  mode: "bot" | "human",
+  timeoutMinutes?: number,
+) {
+  const body: { mode: string; timeout_minutes?: number } = { mode };
+  if (typeof timeoutMinutes === "number") {
+    body.timeout_minutes = timeoutMinutes;
+  }
+  return put(`/api/v1/im-sessions/${session_id}/handling`, body);
+}
+
 export async function getMessageList(data: { session_id: string; limit: number, created_at: string }) {
   if (data.created_at) {
     return get(`/api/v1/messages/${data.session_id}/load?before_time=${encodeURIComponent(data.created_at)}&limit=${data.limit}`);

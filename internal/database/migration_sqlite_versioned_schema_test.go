@@ -31,9 +31,12 @@ var versionedSQLiteColumns = map[string][]string{
 	"tenant_invitations": {"token", "accepted_count"},        // 000054
 	"embed_channels":     {"allow_memory"},                   // 000060
 	"mcp_oauth_tokens":   {"principal_type", "principal_id"}, // 000064
+	"im_channel_sessions": {
+		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // 000085
+	},
 }
 
-const expectedSQLiteMigrationVersion = 11
+const expectedSQLiteMigrationVersion = 12
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)
