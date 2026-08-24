@@ -304,6 +304,11 @@ func (a *Adapter) parseMessage(ctx context.Context, v *events.Message) *im.Incom
 
 	msg := v.Message
 	text := extractText(msg)
+	if text == "" {
+		// Location pins carry no text; render the coordinates so the agent
+		// can feed them straight into distance/nearest-store tools.
+		text = locationText(msg)
+	}
 	image := msg.GetImageMessage()
 	document := msg.GetDocumentMessage()
 	audio := msg.GetAudioMessage()
@@ -404,6 +409,39 @@ func voiceFileName(mimetype string) string {
 	default:
 		return "voice.ogg"
 	}
+}
+
+// locationText renders a shared location (pin or live location) as text.
+// WhatsApp sends pins as LocationMessage with no conversation text, so
+// without this they would be dropped as empty messages.
+func locationText(msg *waE2E.Message) string {
+	var lat, lng float64
+	var name, address string
+	switch {
+	case msg.GetLocationMessage() != nil:
+		loc := msg.GetLocationMessage()
+		lat, lng = loc.GetDegreesLatitude(), loc.GetDegreesLongitude()
+		name, address = loc.GetName(), loc.GetAddress()
+	case msg.GetLiveLocationMessage() != nil:
+		live := msg.GetLiveLocationMessage()
+		lat, lng = live.GetDegreesLatitude(), live.GetDegreesLongitude()
+	default:
+		return ""
+	}
+	if lat == 0 && lng == 0 {
+		return ""
+	}
+	text := fmt.Sprintf("Shared location: %.6f,%.6f", lat, lng)
+	if name != "" {
+		text += " (" + name
+		if address != "" {
+			text += ", " + address
+		}
+		text += ")"
+	} else if address != "" {
+		text += " (" + address + ")"
+	}
+	return text
 }
 
 // extractText pulls the text content (or media caption) out of a message.

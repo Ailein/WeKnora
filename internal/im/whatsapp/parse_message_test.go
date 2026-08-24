@@ -333,3 +333,48 @@ func TestParseQuoteNonText(t *testing.T) {
 		t.Errorf("quote = %+v", in.Quote)
 	}
 }
+
+// Location pins have no conversation text; parseMessage must surface the
+// coordinates as text instead of dropping the message as empty.
+func TestParseMessageLocation(t *testing.T) {
+	a := newOfflineAdapter(t, "*")
+	ctx := context.Background()
+	peer := types.NewJID(testPeerPhone, types.DefaultUserServer)
+
+	evt := msgEvent(peer, peer, &waE2E.Message{LocationMessage: &waE2E.LocationMessage{
+		DegreesLatitude:  proto.Float64(3.210561),
+		DegreesLongitude: proto.Float64(101.651756),
+		Name:             proto.String("Laman Rimbunan"),
+		Address:          proto.String("Kepong, Kuala Lumpur"),
+	}})
+	in := a.parseMessage(ctx, evt)
+	if in == nil {
+		t.Fatal("location pin dropped")
+	}
+	if in.MessageType != im.MessageTypeText {
+		t.Errorf("MessageType = %v, want text", in.MessageType)
+	}
+	want := "Shared location: 3.210561,101.651756 (Laman Rimbunan, Kepong, Kuala Lumpur)"
+	if in.Content != want {
+		t.Errorf("Content = %q, want %q", in.Content, want)
+	}
+
+	// Live location shares carry coordinates only.
+	evt = msgEvent(peer, peer, &waE2E.Message{LiveLocationMessage: &waE2E.LiveLocationMessage{
+		DegreesLatitude:  proto.Float64(2.695817),
+		DegreesLongitude: proto.Float64(101.910708),
+	}})
+	in = a.parseMessage(ctx, evt)
+	if in == nil {
+		t.Fatal("live location dropped")
+	}
+	if in.Content != "Shared location: 2.695817,101.910708" {
+		t.Errorf("Content = %q", in.Content)
+	}
+
+	// A zero-coordinate location message is still dropped as empty.
+	evt = msgEvent(peer, peer, &waE2E.Message{LocationMessage: &waE2E.LocationMessage{}})
+	if in := a.parseMessage(ctx, evt); in != nil {
+		t.Errorf("zero-coordinate location not dropped: %+v", in)
+	}
+}

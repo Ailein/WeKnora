@@ -42,6 +42,8 @@ services:
       - ./config/config.yaml:/app/config/config.yaml
       # Optional: mount custom skills directory (allows adding skills without rebuilding image)
       - ./skills/preloaded:/app/skills/preloaded
+      # Stdio MCP servers shipped with the repo (e.g. togather-distance).
+      - ./integrations:/app/integrations:ro
       # Optional: declarative built-in models. Copy config/builtin_models.yaml.example
       # to config/builtin_models.yaml, edit it for your deployment, then
       # uncomment the line below. See docs/BUILTIN_MODELS.md.
@@ -364,6 +366,22 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # Togather 最近门店 MCP 服务（Streamable HTTP，无第三方依赖）。
+  # WeKnora 出于安全禁用 stdio MCP，故以独立容器提供 HTTP 端点：
+  #   http://togather-distance:9310/mcp
+  # 需将 togather-distance 加入 .env 的 SSRF_WHITELIST 后 app 才允许调用。
+  togather-distance:
+    image: python:3.11-slim
+    container_name: WeKnora-togather-distance
+    volumes:
+      - ./integrations/togather-distance:/srv/togather-distance:ro
+    command: ["python3", "/srv/togather-distance/server.py", "--http", "9310"]
+    expose:
+      - "9310"
+    networks:
+      - WeKnora-network
+    restart: unless-stopped
 
   # Sandbox 镜像：仅用于 build/pull，非常驻服务；app 执行 Skills 时按需 docker run 该镜像，用毕即释
   sandbox:
