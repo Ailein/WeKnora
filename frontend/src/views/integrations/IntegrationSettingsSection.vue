@@ -18,6 +18,7 @@
           </p>
         </div>
         <IMChannelPanel v-model:filter-agent-id="filterAgentId" />
+        <IMAnalyticsPanel />
       </div>
 
       <div v-if="tab === 'embed'" class="section">
@@ -46,6 +47,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import IMChannelPanel from '@/components/IMChannelPanel.vue'
+import IMAnalyticsPanel from '@/components/IMAnalyticsPanel.vue'
 import AgentEmbedChannelPanel from '@/components/AgentEmbedChannelPanel.vue'
 import ApiIntegrationSettings from '@/views/integrations/ApiIntegrationSettings.vue'
 import ChromeExtensionLanding from '@/views/integrations/ChromeExtensionLanding.vue'

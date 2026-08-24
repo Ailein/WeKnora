@@ -232,6 +232,17 @@ sequenceDiagram
 - **接管期间不转写**：人工接管时机器人静默，语音不会消耗 ASR 调用，只在会话历史里记一条 `[语音消息]` 占位（操作者在 IM 客户端可直接听原语音）。
 - **引用语音不转写**：只转写直接发送的语音；引用一条语音再提问时，机器人会按"无法查看语音内容"引导用户文字描述。
 
+## 分析看板
+
+「设置 → 集成 → IM 渠道」页面底部内置一个分析看板（`GET /api/v1/im-analytics`，Viewer 权限即可查看，仅返回聚合计数、不含消息内容），帮助运营者了解客服机器人的使用情况：
+
+- **总览指标**：活跃会话、新增会话、活跃用户、用户消息、机器人回复、人工回复、被接管过的会话（含当前正由人工处理的会话数）、平均响应时长（取 `agent_duration_ms` 的均值）。
+- **每日消息量趋势**：按查看者时区的自然日分桶（前端自动传 `tz_offset_minutes`），双色柱状对比用户消息与机器人+人工回复。
+- **渠道分布与 Top 用户**：按 IM 渠道统计会话/消息量（渠道删除后历史仍保留标注）；列出发消息最多的前 10 位 IM 用户及其最近活跃日期。
+- **口径**：只统计 IM 渠道消息（`messages.channel` 为 `im` / `im_takeover` / `im_manual`），控制台/网页端流量不计入；支持近 7/30/90 天切换与按单个渠道过滤。
+
+实现：聚合 SQL 在 `internal/im/analytics.go`（PostgreSQL 与 SQLite 双方言），前端组件为 `frontend/src/components/IMAnalyticsPanel.vue`。
+
 ## 回复中的图片外链（resource:// 改写）
 
 答案里引用知识库图片时，正文中是 `resource://` 或 `local://` / `minio://` 等内部引用，IM 客户端无法直接拉取。`rewriteStorageURLs`（`internal/im/service.go`）在发送前把它们换成可访问的 http(s) URL：

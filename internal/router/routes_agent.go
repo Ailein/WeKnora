@@ -300,6 +300,13 @@ func RegisterIMChannelRoutes(r *gin.RouterGroup, imHandler *handler.IMHandler, g
 		channels.POST("/:id/toggle", g.Admin(), imHandler.ToggleIMChannel)
 	}
 
+	// IM analytics dashboard — aggregated counters only (no message content),
+	// so Viewer+ like the channel list it sits next to.
+	imAnalytics := g.apiKeyGroup(r.Group("/im-analytics"), apiKeyManageChannels(apiKeyFullAccess()))
+	{
+		imAnalytics.GET("", g.Viewer(), imHandler.GetIMAnalytics)
+	}
+
 	// Operator manual replies into IM-bound sessions — Admin+: the message is
 	// delivered to an external IM user under the bot's identity. The takeover
 	// endpoints are Admin+ too: muting the bot for an external conversation is

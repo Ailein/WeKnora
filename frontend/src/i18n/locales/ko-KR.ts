@@ -1216,6 +1216,47 @@ export default {
       integration: '게시 및 통합'
     }
   },
+  imAnalytics: {
+    title: '분석 대시보드',
+    allChannels: '전체 채널',
+    range7: '최근 7일',
+    range30: '최근 30일',
+    range90: '최근 90일',
+    loadFailed: '분석 데이터를 불러오지 못했습니다',
+    noData: '데이터 없음',
+    cards: {
+      activeSessions: '활성 세션',
+      newSessions: '신규 세션',
+      activeUsers: '활성 사용자',
+      userMessages: '사용자 메시지',
+      botReplies: '봇 응답',
+      manualReplies: '상담원 응답',
+      takeoverSessions: '인수된 세션',
+      humanHandledNow: '현재 {count}개 대화를 상담원이 처리 중',
+      avgBotReply: '평균 응답 시간'
+    },
+    chart: {
+      title: '일별 메시지 수',
+      legendUser: '사용자 메시지',
+      legendBot: '봇 + 상담원 응답',
+      empty: '선택한 기간에 IM 메시지가 없습니다'
+    },
+    channels: {
+      title: '채널별 분포',
+      colChannel: '채널',
+      colPlatform: '플랫폼',
+      colSessions: '세션 수',
+      colMessages: '사용자 메시지',
+      deleted: '(삭제된 채널)'
+    },
+    topUsers: {
+      title: '최다 활동 사용자 Top 10',
+      colUser: '사용자',
+      colPlatform: '플랫폼',
+      colMessages: '메시지 수',
+      colLastActive: '최근 활동'
+    }
+  },
   agentStream: {
     saveToKb: {
       emptyContent: '현재 응답이 비어 있어 지식베이스에 저장할 수 없습니다',

@@ -5031,6 +5031,47 @@ export default {
       }
     }
   },
+  imAnalytics: {
+    title: 'Analytics',
+    allChannels: 'All channels',
+    range7: 'Last 7 days',
+    range30: 'Last 30 days',
+    range90: 'Last 90 days',
+    loadFailed: 'Failed to load analytics',
+    noData: 'No data',
+    cards: {
+      activeSessions: 'Active sessions',
+      newSessions: 'New sessions',
+      activeUsers: 'Active users',
+      userMessages: 'User messages',
+      botReplies: 'Bot replies',
+      manualReplies: 'Manual replies',
+      takeoverSessions: 'Sessions taken over',
+      humanHandledNow: '{count} conversation(s) handled by operators now',
+      avgBotReply: 'Avg response time'
+    },
+    chart: {
+      title: 'Daily message volume',
+      legendUser: 'User messages',
+      legendBot: 'Bot + manual replies',
+      empty: 'No IM messages in the selected range'
+    },
+    channels: {
+      title: 'By channel',
+      colChannel: 'Channel',
+      colPlatform: 'Platform',
+      colSessions: 'Sessions',
+      colMessages: 'User messages',
+      deleted: '(deleted channel)'
+    },
+    topUsers: {
+      title: 'Top 10 most active users',
+      colUser: 'User',
+      colPlatform: 'Platform',
+      colMessages: 'Messages',
+      colLastActive: 'Last active'
+    }
+  },
   agentStream: {
     toolApproval: {
       waiting: 'Awaiting review · {target}',

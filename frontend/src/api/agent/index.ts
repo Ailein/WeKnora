@@ -356,6 +356,64 @@ export function toggleIMChannel(id: string) {
   return post<{ data: IMChannel }>(`/api/v1/im-channels/${id}/toggle`);
 }
 
+// ===== IM 分析看板 =====
+
+export interface IMAnalyticsTotals {
+  active_sessions: number;
+  new_sessions: number;
+  active_users: number;
+  user_messages: number;
+  bot_replies: number;
+  manual_replies: number;
+  takeover_sessions: number;
+  human_handled_now: number;
+  avg_bot_reply_ms: number;
+}
+
+export interface IMAnalyticsDay {
+  date: string; // YYYY-MM-DD, viewer-local calendar day
+  user_messages: number;
+  bot_replies: number;
+  manual_replies: number;
+  new_sessions: number;
+  active_users: number;
+}
+
+export interface IMAnalyticsChannel {
+  im_channel_id: string;
+  name: string;
+  platform: string;
+  sessions: number;
+  user_messages: number;
+}
+
+export interface IMAnalyticsTopUser {
+  platform: string;
+  user_id: string;
+  messages: number;
+  sessions: number;
+  last_active_date: string;
+}
+
+export interface IMAnalyticsResult {
+  start_date: string;
+  end_date: string;
+  days: number;
+  totals: IMAnalyticsTotals;
+  daily: IMAnalyticsDay[];
+  channels: IMAnalyticsChannel[];
+  top_users: IMAnalyticsTopUser[];
+}
+
+export function getIMAnalytics(params: { days: number; tz_offset_minutes: number; im_channel_id?: string }) {
+  const search = new URLSearchParams({
+    days: String(params.days),
+    tz_offset_minutes: String(params.tz_offset_minutes),
+  });
+  if (params.im_channel_id) search.set('im_channel_id', params.im_channel_id);
+  return get<{ data: IMAnalyticsResult }>(`/api/v1/im-analytics?${search.toString()}`);
+}
+
 // ===== 推荐问题 =====
 
 // 推荐问题

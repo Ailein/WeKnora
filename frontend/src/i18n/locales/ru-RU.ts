@@ -1216,6 +1216,47 @@ export default {
       integration: 'Публикация и интеграция'
     }
   },
+  imAnalytics: {
+    title: 'Аналитика',
+    allChannels: 'Все каналы',
+    range7: 'За 7 дней',
+    range30: 'За 30 дней',
+    range90: 'За 90 дней',
+    loadFailed: 'Не удалось загрузить аналитику',
+    noData: 'Нет данных',
+    cards: {
+      activeSessions: 'Активные сессии',
+      newSessions: 'Новые сессии',
+      activeUsers: 'Активные пользователи',
+      userMessages: 'Сообщения пользователей',
+      botReplies: 'Ответы бота',
+      manualReplies: 'Ответы операторов',
+      takeoverSessions: 'Перехваченные сессии',
+      humanHandledNow: 'Сейчас {count} диалог(ов) ведут операторы',
+      avgBotReply: 'Среднее время ответа'
+    },
+    chart: {
+      title: 'Сообщения по дням',
+      legendUser: 'Сообщения пользователей',
+      legendBot: 'Ответы бота и операторов',
+      empty: 'Нет IM-сообщений за выбранный период'
+    },
+    channels: {
+      title: 'По каналам',
+      colChannel: 'Канал',
+      colPlatform: 'Платформа',
+      colSessions: 'Сессии',
+      colMessages: 'Сообщения пользователей',
+      deleted: '(канал удалён)'
+    },
+    topUsers: {
+      title: 'Топ-10 активных пользователей',
+      colUser: 'Пользователь',
+      colPlatform: 'Платформа',
+      colMessages: 'Сообщения',
+      colLastActive: 'Последняя активность'
+    }
+  },
   agentStream: {
     saveToKb: {
       emptyContent: 'Текущий ответ пуст, сохранение в базу знаний невозможно',

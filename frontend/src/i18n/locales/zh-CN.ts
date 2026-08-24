@@ -1218,6 +1218,47 @@ export default {
       integration: '发布集成'
     }
   },
+  imAnalytics: {
+    title: '分析看板',
+    allChannels: '全部渠道',
+    range7: '近 7 天',
+    range30: '近 30 天',
+    range90: '近 90 天',
+    loadFailed: '加载分析数据失败',
+    noData: '暂无数据',
+    cards: {
+      activeSessions: '活跃会话',
+      newSessions: '新增会话',
+      activeUsers: '活跃用户',
+      userMessages: '用户消息',
+      botReplies: '机器人回复',
+      manualReplies: '人工回复',
+      takeoverSessions: '接管过的会话',
+      humanHandledNow: '当前 {count} 个会话由人工处理',
+      avgBotReply: '平均响应时长'
+    },
+    chart: {
+      title: '每日消息量',
+      legendUser: '用户消息',
+      legendBot: '机器人 + 人工回复',
+      empty: '所选范围内暂无 IM 消息'
+    },
+    channels: {
+      title: '渠道分布',
+      colChannel: '渠道',
+      colPlatform: '平台',
+      colSessions: '会话数',
+      colMessages: '用户消息',
+      deleted: '（已删除渠道）'
+    },
+    topUsers: {
+      title: '最活跃用户 Top 10',
+      colUser: '用户',
+      colPlatform: '平台',
+      colMessages: '消息数',
+      colLastActive: '最近活跃'
+    }
+  },
   agentStream: {
     saveToKb: {
       emptyContent: '当前回答为空，无法保存到知识库',
