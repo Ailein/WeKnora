@@ -121,7 +121,8 @@ UI → 智能体 → Togather 客服小灵，过一遍验收用例：
 
 | 用例 | 期望 |
 |---|---|
-| `any pizza?` | 列出全部 4 款披萨 + 价格 + 菜单 URL |
+| `any pizza?` | 列出全部 4 款披萨（P1/P18/P8/P3）+ 价格 + 菜单 URL；必须先检索（无编造菜品/编号） |
+| `全部菜单发一下` | 秒回分类总览（25 类，早餐标注 5 家分店）+ URL + 问想看哪类；**不**逐项列全部菜品 |
 | `你们有什么披萨？` | 中文菜名（MENU_CN）、价格一致 |
 | `I am at Bandar Puchong Jaya 47170, which outlet is nearest?` | 调 `mcp_togather_distance_togather_nearest_store`，答 Puchong ~527m + 地址 + 地图链接 |
 | `nak menu` (BM) | BM 回复，菜名保持英文 |
