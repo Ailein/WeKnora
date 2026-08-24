@@ -291,7 +291,9 @@ def main():
         return cands[0]["id"] if cands else ""
 
     chat_model = args.chat_model or pick("KnowledgeQA", "minimax") or pick("KnowledgeQA")
-    embedding_model = pick("Embedding")
+    # Prefer a local (Ollama) embedder when present — the WeKnoraCloud free
+    # tier runs out of quota quickly on a 72-document import.
+    embedding_model = pick("Embedding", "bge") or pick("Embedding")
     rerank_model = pick("Rerank")
     if not (chat_model and embedding_model):
         sys.exit("need at least one KnowledgeQA model and one Embedding model configured in WeKnora")
