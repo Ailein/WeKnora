@@ -271,6 +271,42 @@ func TestParseMessageMedia(t *testing.T) {
 	if _, ok := a.media.get(in.FileKey); !ok {
 		t.Error("document message not cached for DownloadFile")
 	}
+
+	// Voice notes (PTT) become voice messages with a mimetype-derived name.
+	voiceEvt := msgEvent(peer, peer, &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
+		Mimetype:   proto.String("audio/ogg; codecs=opus"),
+		PTT:        proto.Bool(true),
+		FileLength: proto.Uint64(1024),
+	}})
+	voiceEvt.Info.ID = "MSG-3"
+	in = a.parseMessage(ctx, voiceEvt)
+	if in == nil {
+		t.Fatal("voice message dropped")
+	}
+	if in.MessageType != im.MessageTypeVoice || in.FileName != "voice.ogg" || in.FileSize != 1024 || in.Content != "" {
+		t.Errorf("voice fields = %+v", in)
+	}
+	if _, ok := a.media.get(in.FileKey); !ok {
+		t.Error("voice message not cached for DownloadFile")
+	}
+}
+
+func TestVoiceFileName(t *testing.T) {
+	cases := map[string]string{
+		"audio/ogg; codecs=opus": "voice.ogg",
+		"audio/mpeg":             "voice.mp3",
+		"audio/mp4":              "voice.m4a",
+		"audio/wav":              "voice.wav",
+		"audio/aac":              "voice.aac",
+		"audio/amr":              "voice.amr",
+		"":                       "voice.ogg",
+		"application/unknown":    "voice.ogg",
+	}
+	for mimetype, want := range cases {
+		if got := voiceFileName(mimetype); got != want {
+			t.Errorf("voiceFileName(%q) = %q, want %q", mimetype, got, want)
+		}
+	}
 }
 
 func TestParseQuoteNonText(t *testing.T) {

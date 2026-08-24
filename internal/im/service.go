@@ -292,6 +292,9 @@ type Service struct {
 	documentReader  interfaces.DocumentReader
 	storageResolver interfaces.StorageBackendResolver
 
+	// modelService resolves the agent's ASR model for voice-message transcription.
+	modelService interfaces.ModelService
+
 	// cmdRegistry holds all registered slash-commands.
 	cmdRegistry *CommandRegistry
 
@@ -822,6 +825,7 @@ func NewService(
 	streamManager interfaces.StreamManager,
 	defaultFileSvc interfaces.FileService,
 	documentReader interfaces.DocumentReader,
+	modelService interfaces.ModelService,
 	oauthManager *mcppkg.OAuthManager,
 	redisClient *redis.Client,
 	appCfg *config.Config,
@@ -851,6 +855,7 @@ func NewService(
 		defaultFileSvc:   defaultFileSvc,
 		documentReader:   documentReader,
 		storageResolver:  storageResolver,
+		modelService:     modelService,
 		oauthManager:     oauthManager,
 		cmdRegistry:      registry,
 		channels:         make(map[string]*channelState),
@@ -1965,6 +1970,31 @@ func (s *Service) executeQARequest(req *qaRequest) {
 	// NOTE: StreamManager-based stop detection is started inside handleMessageStream /
 	// runQA after the assistant message is created (that's when we have the
 	// sessionID + messageID needed to poll StreamManager).
+
+	// Voice messages carry no text: transcribe first so the transcript becomes
+	// the QA query (and the stored user message). Failures answer the user
+	// directly — there is nothing to ask the QA pipeline without a transcript.
+	if req.msg.MessageType == MessageTypeVoice {
+		transcript, err := s.transcribeIMVoice(ctx, req.msg, req.adapter, req.agent)
+		if err != nil {
+			logger.Warnf(ctx, "[IM] voice transcription failed: %v", err)
+			if sendErr := req.adapter.SendReply(ctx, req.msg, &ReplyMessage{Content: voiceErrorReply(err), IsFinal: true}); sendErr != nil {
+				logger.Warnf(ctx, "[IM] Failed to send voice error reply: %v", sendErr)
+			}
+			return
+		}
+		req.msg.Content = transcript
+		// The title pass in HandleMessage saw an empty Content; retry with the
+		// transcript so a voice-initiated conversation still gets a title.
+		if req.session.Title == "" {
+			sessionForTitle := *req.session
+			titleModelID := ""
+			if req.agent != nil && req.agent.Config.ModelID != "" {
+				titleModelID = req.agent.Config.ModelID
+			}
+			s.sessionService.GenerateTitleAsync(ctx, &sessionForTitle, transcript, titleModelID, nil)
+		}
+	}
 
 	// kbIDs is left empty so the QA pipeline resolves them from the agent config.
 	var kbIDs []string

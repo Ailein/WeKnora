@@ -871,7 +871,7 @@ export default {
     },
     audioUpload: {
       label: '语音上传',
-      desc: '启用后用户可在对话中上传音频文件，系统将使用 ASR 模型自动转录为文字',
+      desc: '启用后用户可在对话中上传音频文件，IM 渠道（如 WhatsApp）的语音消息也会自动转写；系统将使用 ASR 模型转录为文字',
       asrModel: 'ASR 模型',
       asrModelDesc: '用于音频转录的语音识别模型，未配置时音频文件将以占位符形式传递',
       asrModelPlaceholder: '请选择 ASR 模型'

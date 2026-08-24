@@ -197,6 +197,16 @@ func TestTakeoverGateSilencesAndRecords(t *testing.T) {
 	if len(msgSvc.created) != 1 {
 		t.Fatalf("blank content recorded a message: %d rows", len(msgSvc.created))
 	}
+
+	// Voice messages carry no text during a takeover (transcription is
+	// skipped); a placeholder row keeps the console aware the user spoke.
+	voice := &IncomingMessage{Platform: PlatformWhatsApp, UserID: cs.UserID, MessageType: MessageTypeVoice}
+	if !svc.takeoverGate(context.Background(), cs, &types.Session{ID: "session-dm"}, voice) {
+		t.Fatal("takeoverGate = false for voice message, want silenced")
+	}
+	if len(msgSvc.created) != 2 || msgSvc.created[1].Content != "[语音消息]" {
+		t.Fatalf("voice placeholder rows = %+v, want a [语音消息] row", msgSvc.created)
+	}
 }
 
 func TestTakeoverGateExpiryResumesBot(t *testing.T) {

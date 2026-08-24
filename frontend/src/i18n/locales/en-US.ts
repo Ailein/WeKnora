@@ -5523,7 +5523,7 @@ export default {
     },
     audioUpload: {
       label: 'Audio Upload',
-      desc: 'When enabled, users can upload audio files in conversations. The system will automatically transcribe them using the ASR model.',
+      desc: 'When enabled, users can upload audio files in conversations, and voice messages from IM channels (e.g. WhatsApp) are transcribed too. The system will automatically transcribe them using the ASR model.',
       asrModel: 'ASR Model',
       asrModelDesc: 'Speech recognition model for audio transcription. If not configured, audio files will be passed as placeholders.',
       asrModelPlaceholder: 'Select ASR Model'

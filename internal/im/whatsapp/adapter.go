@@ -306,7 +306,8 @@ func (a *Adapter) parseMessage(ctx context.Context, v *events.Message) *im.Incom
 	text := extractText(msg)
 	image := msg.GetImageMessage()
 	document := msg.GetDocumentMessage()
-	if text == "" && image == nil && document == nil {
+	audio := msg.GetAudioMessage()
+	if text == "" && image == nil && document == nil && audio == nil {
 		// Reactions, receipts, polls, calls, protocol messages, …
 		return nil
 	}
@@ -364,12 +365,45 @@ func (a *Adapter) parseMessage(ctx context.Context, v *events.Message) *im.Incom
 		incoming.FileName = document.GetFileName()
 		incoming.FileSize = int64(document.GetFileLength())
 		a.media.put(incoming.FileKey, msg, incoming.FileName)
+	case audio != nil:
+		// Voice notes (PTT) and plain audio files both go through ASR.
+		incoming.MessageType = im.MessageTypeVoice
+		incoming.FileKey = mediaKey(&info)
+		incoming.FileName = voiceFileName(audio.GetMimetype())
+		incoming.FileSize = int64(audio.GetFileLength())
+		a.media.put(incoming.FileKey, msg, incoming.FileName)
 	}
 
 	if quote := a.parseQuote(msg); quote != nil {
 		incoming.Quote = quote
 	}
 	return incoming
+}
+
+// voiceFileName derives a file name from the audio mimetype. The extension is
+// what the ASR endpoint uses to detect the container format, so it must match
+// the actual payload; WhatsApp voice notes are "audio/ogg; codecs=opus".
+func voiceFileName(mimetype string) string {
+	mt := strings.ToLower(mimetype)
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = mt[:i]
+	}
+	switch strings.TrimSpace(mt) {
+	case "audio/mpeg", "audio/mp3":
+		return "voice.mp3"
+	case "audio/mp4", "audio/m4a", "audio/x-m4a":
+		return "voice.m4a"
+	case "audio/wav", "audio/x-wav", "audio/wave":
+		return "voice.wav"
+	case "audio/aac":
+		return "voice.aac"
+	case "audio/flac", "audio/x-flac":
+		return "voice.flac"
+	case "audio/amr":
+		return "voice.amr"
+	default:
+		return "voice.ogg"
+	}
 }
 
 // extractText pulls the text content (or media caption) out of a message.

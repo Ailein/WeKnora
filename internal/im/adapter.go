@@ -47,6 +47,10 @@ const (
 	MessageTypeText  MessageType = "text"
 	MessageTypeFile  MessageType = "file"
 	MessageTypeImage MessageType = "image"
+	// MessageTypeVoice is an audio/voice-note message. The QA worker downloads
+	// it via FileDownloader and transcribes it with the agent's ASR model
+	// before entering the QA pipeline.
+	MessageTypeVoice MessageType = "voice"
 )
 
 // IncomingMessage is the unified message parsed from an IM callback.

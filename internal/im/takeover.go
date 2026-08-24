@@ -212,12 +212,20 @@ func (s *Service) takeoverGate(ctx context.Context, cs *ChannelSession, session 
 		return false
 	}
 
-	if content := strings.TrimSpace(msg.Content); content != "" {
+	content := strings.TrimSpace(msg.Content)
+	if content == "" && msg.MessageType == MessageTypeVoice {
+		// Voice messages are not transcribed while an operator holds the
+		// conversation (the bot is silent and the operator hears the original
+		// audio in the IM client); record a placeholder so the console still
+		// shows that the user said something.
+		content = "[语音消息]"
+	}
+	if content != "" {
 		if _, err := s.messageService.CreateMessage(ctx, &types.Message{
 			SessionID:   session.ID,
 			RequestID:   uuid.New().String(),
 			Role:        "user",
-			Content:     msg.Content,
+			Content:     content,
 			IsCompleted: true,
 			Channel:     types.ChannelIMTakeover,
 			CreatedAt:   time.Now(),

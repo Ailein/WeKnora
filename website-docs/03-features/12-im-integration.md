@@ -85,7 +85,7 @@ imService.RegisterAdapterFactory("whatsapp", whatsapp.NewFactory(db)) // 需要 
 | 微信 `wechat`（iLink 机器人） | **longpoll**（强制；创建时后端强制 `mode=longpoll`、`output_mode=full`） | 否（仅整段输出） | 是 | 否 | `bot_token`、`ilink_bot_id`（均必填） |
 | QQ 机器人 `qqbot` | **websocket**（仅支持） | 否 | 否 | 否 | `app_id`、`client_secret`、`api_base_url`、`gateway_url` |
 | 云之家 `yunzhijia` | **webhook** / websocket（从 `send_msg_url` 推导 WS 地址） | 否 | 是 | 否 | `send_msg_url`（必填）、`secret`、`app_id`、`app_secret`、`allowed_webhook_host_suffix`、`timeout_seconds` |
-| WhatsApp `whatsapp` | **websocket**（强制；whatsmeow 长连接，WhatsApp Web 多设备协议扫码配对，创建时后端强制 `output_mode=full`） | 否（消息高频编辑在非官方客户端上过于显眼） | 是（图片/文档） | 否 | `device_jid`（扫码配对后回填，必填）、`allow_from`（私聊白名单，逗号分隔号码，`*` 放行所有，留空拒绝全部私聊；群聊需 @机器人或回复机器人消息） |
+| WhatsApp `whatsapp` | **websocket**（强制；whatsmeow 长连接，WhatsApp Web 多设备协议扫码配对，创建时后端强制 `output_mode=full`） | 否（消息高频编辑在非官方客户端上过于显眼） | 是（图片/文档/语音，语音经 ASR 转写后进入 QA） | 否 | `device_jid`（扫码配对后回填，必填）、`allow_from`（私聊白名单，逗号分隔号码，`*` 放行所有，留空拒绝全部私聊；群聊需 @机器人或回复机器人消息） |
 
 ## 渠道模型与配置（internal/im/types.go）
 
@@ -221,6 +221,16 @@ sequenceDiagram
 文件和图片会作为 QA 附件处理：文档内容会提供给模型，图片会在模型支持时直接识别。因此，即使渠道未配置文件知识库，机器人也会基于附件内容正常回复。
 
 `knowledge_base_id` 只决定是否将附件额外保存到知识库。配置后，保存任务在后台执行，不影响当前 QA 回复，也不会额外发送“已入库”或“解析完成”消息。解析文本最多保留前 500 行且不超过 32 KiB，触及任一限制时模型会得到通用截断提示。附件无法读取、平台不支持下载或文件超过 32 MiB 时，机器人会提示用户改用文字描述或重新发送。
+
+## 语音消息识别（ASR）
+
+对支持的平台（当前为 WhatsApp，语音条与音频文件均可），用户发来的语音会先经 ASR 转写为文字，再以转写文本作为提问进入正常 QA 流程（`internal/im/voice.go`）：
+
+- **开关复用 Agent 配置**：转写使用渠道所绑定 Agent 的「音频上传 + ASR 模型」设置（`audio_upload_enabled` + `asr_model_id`，即 Web 控制台对话附件语音转写用的同一组配置）。未开启时机器人会回复"当前渠道暂未开启语音识别，请发送文字消息"。
+- **转写文本即消息**：会话历史中记录的用户消息就是转写文本，控制台按普通文字消息展示；机器人直接基于转写内容回答，不会复述"我听到了……"。会话标题也会用转写文本生成。
+- **限制**：语音大小上限 16 MiB（多数 ASR 服务商限约 25 MB），转写结果超过 4096 字符会截断；识别为空（静音/噪声）或转写失败时提示用户重发或改用文字。
+- **接管期间不转写**：人工接管时机器人静默，语音不会消耗 ASR 调用，只在会话历史里记一条 `[语音消息]` 占位（操作者在 IM 客户端可直接听原语音）。
+- **引用语音不转写**：只转写直接发送的语音；引用一条语音再提问时，机器人会按"无法查看语音内容"引导用户文字描述。
 
 ## 回复中的图片外链（resource:// 改写）
 

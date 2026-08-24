@@ -869,7 +869,7 @@ export default {
     },
     audioUpload: {
       label: '음성 업로드',
-      desc: '활성화하면 사용자가 대화에서 오디오 파일을 업로드할 수 있으며, ASR 모델로 자동 변환됩니다',
+      desc: '활성화하면 사용자가 대화에서 오디오 파일을 업로드할 수 있으며, IM 채널(예: WhatsApp)의 음성 메시지도 자동으로 변환됩니다. ASR 모델로 텍스트로 변환됩니다',
       asrModel: 'ASR 모델',
       asrModelDesc: '음성 인식 모델입니다. 설정하지 않으면 오디오 파일이 플레이스홀더로 전달됩니다',
       asrModelPlaceholder: 'ASR 모델 선택'
