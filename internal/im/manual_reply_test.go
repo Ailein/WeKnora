@@ -79,6 +79,8 @@ func createManualReplyTables(t *testing.T, db *gorm.DB) {
 		handling_mode TEXT NOT NULL DEFAULT 'bot',
 		handling_expires_at DATETIME,
 		handling_timeout_minutes INTEGER NOT NULL DEFAULT 0,
+		consecutive_failures INTEGER NOT NULL DEFAULT 0,
+		handoff_notified_at DATETIME,
 		metadata TEXT DEFAULT '{}',
 		created_at DATETIME,
 		updated_at DATETIME,

@@ -215,6 +215,58 @@
           </div>
         </section>
 
+        <section class="setting-drawer__section im-drawer__section">
+          <h4 class="setting-drawer__section-title">{{ $t('agentEditor.im.handoff.section') }}</h4>
+          <div class="setting-row" :class="{ 'setting-row--last': !formData.handoff.enabled }">
+            <div class="setting-info">
+              <label>{{ $t('agentEditor.im.handoff.enable') }}</label>
+              <p class="form-desc">{{ $t('agentEditor.im.handoff.enableHint') }}</p>
+            </div>
+            <div class="setting-control">
+              <t-switch v-model="formData.handoff.enabled" size="small" />
+            </div>
+          </div>
+          <template v-if="formData.handoff.enabled">
+            <div class="form-item">
+              <label class="form-label">{{ $t('agentEditor.im.handoff.keywords') }}</label>
+              <t-input v-model="formData.handoff.keywordsText"
+                :placeholder="$t('agentEditor.im.handoff.keywordsPlaceholder')" />
+              <p class="form-desc">{{ $t('agentEditor.im.handoff.keywordsHint') }}</p>
+            </div>
+            <div class="form-item">
+              <label class="form-label">{{ $t('agentEditor.im.handoff.fallbackThreshold') }}</label>
+              <t-input-number v-model="formData.handoff.fallbackThreshold" :min="0" :max="10" style="width: 100%;" />
+              <p class="form-desc">{{ $t('agentEditor.im.handoff.fallbackThresholdHint') }}</p>
+            </div>
+            <div class="form-item">
+              <label class="form-label">{{ $t('agentEditor.im.handoff.autoReply') }}</label>
+              <t-textarea v-model="formData.handoff.autoReply" :autosize="{ minRows: 2, maxRows: 4 }"
+                :placeholder="$t('agentEditor.im.handoff.autoReplyPlaceholder')" />
+            </div>
+            <div v-if="formData.platform === 'whatsapp'" class="form-item">
+              <label class="form-label">{{ $t('agentEditor.im.handoff.timeout') }}</label>
+              <t-input-number v-model="formData.handoff.timeoutMinutes" :min="5" :max="1440" style="width: 100%;" />
+              <p class="form-desc">{{ $t('agentEditor.im.handoff.timeoutHint') }}</p>
+            </div>
+            <p v-else class="form-desc">{{ $t('agentEditor.im.handoff.noTakeoverHint') }}</p>
+            <div class="form-item">
+              <label class="form-label">{{ $t('agentEditor.im.handoff.webhook') }}</label>
+              <t-input v-model="formData.handoff.webhookUrl" placeholder="https://…" />
+              <p class="form-desc">{{ $t('agentEditor.im.handoff.webhookHint') }}</p>
+            </div>
+            <div v-if="formData.handoff.webhookUrl.trim()" class="form-item">
+              <label class="form-label">{{ $t('agentEditor.im.handoff.webhookFormat') }}</label>
+              <t-select v-model="formData.handoff.webhookFormat">
+                <t-option value="generic" :label="$t('agentEditor.im.handoff.formatGeneric')" />
+                <t-option value="wecom" :label="$t('agentEditor.im.handoff.formatWecom')" />
+                <t-option value="dingtalk" :label="$t('agentEditor.im.handoff.formatDingtalk')" />
+                <t-option value="feishu" :label="$t('agentEditor.im.handoff.formatFeishu')" />
+                <t-option value="slack" :label="$t('agentEditor.im.handoff.formatSlack')" />
+              </t-select>
+            </div>
+          </template>
+        </section>
+
         <section v-if="editingChannel && formData.mode === 'webhook'"
           class="setting-drawer__section im-drawer__section">
           <h4 class="setting-drawer__section-title">{{ $t('agentEditor.im.sectionCallback') }}</h4>
@@ -656,6 +708,12 @@ import {
 } from '@/api/agent';
 import { useChatResourcesStore } from '@/stores/chatResources';
 import type { IMChannel } from '@/api/agent';
+import {
+  defaultHandoffForm,
+  handoffConfigFromForm,
+  handoffFormFromConfig,
+  validateHandoffForm,
+} from '@/components/imHandoff';
 import { useAuthStore } from '@/stores/auth';
 import SettingDrawer from '@/components/settings/SettingDrawer.vue';
 import IntegrationsAgentFilter from '@/components/IntegrationsAgentFilter.vue';
@@ -759,6 +817,13 @@ function validateWizardStep(step: number): boolean {
   if (step === 0 && !formData.value.target_agent_id) {
     MessagePlugin.warning(t('integrations.selectAgentHint'));
     return false;
+  }
+  if (step === 1) {
+    const handoffError = validateHandoffForm(formData.value.handoff);
+    if (handoffError) {
+      MessagePlugin.warning(t(handoffError));
+      return false;
+    }
   }
   return true;
 }
@@ -955,6 +1020,7 @@ const formData = ref({
   session_mode: 'user' as 'user' | 'thread',
   knowledge_base_id: '',
   credentials: defaultCredentials(),
+  handoff: defaultHandoffForm(),
 });
 
 const channelMenuOptions = (channel: IMChannel | IMChannelOverview) => ([
@@ -1319,6 +1385,7 @@ async function editChannel(channel: IMChannel | IMChannelOverview) {
     session_mode: fullChannel.session_mode || 'user',
     knowledge_base_id: fullChannel.knowledge_base_id || '',
     credentials: { ...fullChannel.credentials },
+    handoff: handoffFormFromConfig(fullChannel.handoff_config),
   };
   normalizeYunzhijiaCredentials();
   if (STATUS_PLATFORMS.has(fullChannel.platform)) {
@@ -1352,6 +1419,7 @@ function resetForm() {
     session_mode: 'user',
     knowledge_base_id: '',
     credentials: defaultCredentials(),
+    handoff: defaultHandoffForm(),
   };
 }
 
@@ -1377,6 +1445,12 @@ async function handleSave() {
         return;
       }
     }
+    const handoffError = validateHandoffForm(formData.value.handoff);
+    if (handoffError) {
+      MessagePlugin.warning(t(handoffError));
+      return;
+    }
+    const handoffConfig = handoffConfigFromForm(formData.value.handoff);
 
     if (editingChannel.value) {
       await updateIMChannel(editingChannel.value.id, {
@@ -1386,6 +1460,7 @@ async function handleSave() {
         session_mode: formData.value.session_mode,
         knowledge_base_id: formData.value.knowledge_base_id,
         credentials: formData.value.credentials,
+        handoff_config: handoffConfig,
         enabled: editingEnabled.value,
         ...(formData.value.target_agent_id ? { agent_id: formData.value.target_agent_id } : {}),
       });
@@ -1404,6 +1479,7 @@ async function handleSave() {
         session_mode: formData.value.session_mode,
         knowledge_base_id: formData.value.knowledge_base_id,
         credentials: formData.value.credentials,
+        handoff_config: handoffConfig,
       });
       MessagePlugin.success(t('common.createSuccess'));
     }

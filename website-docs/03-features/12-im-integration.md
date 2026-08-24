@@ -135,6 +135,21 @@ Webhook 模式的接入方式就是把 `https://<你的域名>/api/v1/im/callbac
 - 机器人恢复后，两条历史管线会把接管期间的用户消息与人工回复按时间顺序折叠进上一轮回答（前缀 `[用户消息（人工接管期间）]` / `[人工客服回复]`），保证后续 AI 回答知道人工阶段聊了什么。
 - 接管状态存在**当前存活**的 `ChannelSession` 上：即使操作者是在被 `/clear` 归档的历史会话里点的接管，也会自动落到该用户当前活跃的对话上。
 
+### 转人工触发器与通知（internal/im/handoff.go）
+
+在渠道编辑抽屉「连接设置」步骤中可以开启**自动转人工**，配置存放在 `im_channels.handoff_config`（`PUT /api/v1/im-channels/:id` 的 `handoff_config` 字段，Admin+）。两种触发方式，可同时启用：
+
+- **关键词触发**：用户消息包含任一配置关键词（不区分大小写的包含匹配）时立即触发，该消息不再进入 QA 管线，而是记录为 `channel=im_takeover` 的用户消息。注意选择足够具体的关键词（「人工」会误命中「人工智能」）。
+- **连续未答触发**：机器人连续 N 条消息未能回答（QA 出错或产出空结果、用户收到兜底致歉语）时触发。计数存放在 `im_channel_sessions.consecutive_failures`，每次成功回答即清零；阈值 0 表示关闭，上限 10。
+
+触发后的动作：
+
+1. **切换人工接管**（仅支持人工回复的平台，当前为 WhatsApp）：会话进入 `handling_mode=human`，窗口时长取配置的 `timeout_minutes`（默认 60，范围 5–1440），到期机器人自动恢复——与手动接管完全同一套状态机，操作者可直接在控制台人工回复。不支持控制台回复的平台只发提示与通知，不静默机器人（否则用户会被晾在原地）。
+2. **发送转接提示语**给用户（可配置，留空用内置默认文案），并记录为 assistant 消息供控制台查看。
+3. **Webhook 通知**（可选）：异步 POST 到配置地址，8 秒超时、失败仅记日志。`webhook_format` 支持 `generic`（完整 JSON 事件，含 reason/keyword/fallback_count/channel/session/user/消息摘录）以及企业微信 / 钉钉 / 飞书群机器人和 Slack 的文本格式，可直接填对应平台的群机器人 Webhook 地址。
+
+同一会话 10 分钟冷却期内重复触发只切状态、不重复打扰（不再发提示语与通知），防止用户刷关键词轰炸运营群。表单校验要求开启时至少配置一种触发方式，Webhook 必须为 http(s) 地址。
+
 ### 长连接的可靠性：leader 选举与 Supervisor
 
 - **多实例 leader 选举**（`service.go`）：websocket/longpoll 渠道在多实例部署（有 Redis）时，通过 `SETNX im:ws:leader:<channelID>`（TTL 15s，每 5s 续期）保证**只有一个实例**维持长连接；非 leader 实例每 10s 重试抢锁，leader 宕机后自动接管。longpoll 渠道停止时刻意不立即释放锁，等 TTL 自然过期，避免新旧实例短暂双写。续期失败（丢失 leader 身份）时走 `handleWSLeadershipLoss`：先停掉本实例的适配器，再把渠道放回抢锁重试循环——重试前会重新读一次数据库中的渠道行，因此期间被删除、禁用或改配置的渠道不会被旧运行时复活。

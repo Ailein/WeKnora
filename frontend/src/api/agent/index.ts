@@ -297,6 +297,18 @@ export function getAgentTypePresets() {
 
 // ===== IM渠道 =====
 
+// 转人工触发器配置：关键词/连续未答阈值触发人工接管并通知运营。
+// 与后端 internal/im/handoff.go 的 HandoffConfig 对应。
+export interface IMHandoffConfig {
+  enabled?: boolean;
+  keywords?: string[];
+  fallback_threshold?: number;
+  auto_reply?: string;
+  timeout_minutes?: number;
+  webhook_url?: string;
+  webhook_format?: 'generic' | 'wecom' | 'dingtalk' | 'feishu' | 'slack';
+}
+
 export interface IMChannel {
   id: string;
   tenant_id?: number;
@@ -310,6 +322,7 @@ export interface IMChannel {
   session_mode?: 'user' | 'thread';
   knowledge_base_id?: string;
   credentials: Record<string, any>;
+  handoff_config?: IMHandoffConfig;
   created_at?: string;
   updated_at?: string;
 }

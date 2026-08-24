@@ -1893,6 +1893,12 @@ func (s *Service) HandleMessage(ctx context.Context, msg *IncomingMessage, chann
 		return nil
 	}
 
+	// Handoff keyword trigger: the user asked for a human — switch the
+	// conversation to human handling and notify operators instead of running QA.
+	if s.handoffGate(sessionCtx, channel, channelSession, session, msg, adapter) {
+		return nil
+	}
+
 	s.persistIMLastRequestState(sessionCtx, session.ID, agentID, customAgent, nil)
 
 	// 5. Enqueue the QA request into the bounded worker pool.
@@ -2018,7 +2024,7 @@ func (s *Service) executeQARequest(req *qaRequest) {
 	// If the adapter supports streaming and output is not "full", use streaming.
 	if !streamDisabled {
 		if streamer, ok := req.adapter.(StreamSender); ok {
-			if err := s.handleMessageStream(ctx, req.msg, req.session, req.agent, kbIDs, attachments, imageURLs, streamer, req.adapter, req.userKey, req.tenant); err != nil {
+			if err := s.handleMessageStream(ctx, req.channel, req.msg, req.session, req.agent, kbIDs, attachments, imageURLs, streamer, req.adapter, req.userKey, req.tenant); err != nil {
 				logger.Errorf(ctx, "[IM] Stream QA failed: %v", err)
 			}
 			return
@@ -2036,10 +2042,12 @@ func (s *Service) executeQARequest(req *qaRequest) {
 		Content: formatIMOutboundAnswer(ctx, answer, req.tenant, s.defaultFileSvc, s.storageResolver),
 		IsFinal: true,
 	}
-	if err := req.adapter.SendReply(ctx, req.msg, reply); err != nil {
-		logger.Errorf(ctx, "[IM] Send reply failed: %v", err)
+	if sendErr := req.adapter.SendReply(ctx, req.msg, reply); sendErr != nil {
+		logger.Errorf(ctx, "[IM] Send reply failed: %v", sendErr)
 		return
 	}
+	// After the answer went out, so a triggered handoff notice follows it.
+	s.noteBotAnswerOutcome(ctx, req.channel, req.session, req.msg, req.adapter, err != nil)
 
 	logger.Infof(ctx, "[IM] Reply sent: channel=%s platform=%s user=%s answer_len=%d",
 		req.channelID, req.msg.Platform, req.msg.UserID, len(answer))
@@ -2449,12 +2457,12 @@ func briefToolSummary(output string) string {
 // handleMessageStream runs the QA pipeline and streams answer chunks to the IM platform
 // in real-time via the StreamSender interface. Chunks are batched at streamFlushInterval
 // to avoid API rate-limiting.
-func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage, session *types.Session, customAgent *types.CustomAgent, kbIDs []string, attachments types.MessageAttachments, imageURLs []string, streamer StreamSender, adapter Adapter, userKey string, tenant *types.Tenant) error {
+func (s *Service) handleMessageStream(ctx context.Context, channel *IMChannel, msg *IncomingMessage, session *types.Session, customAgent *types.CustomAgent, kbIDs []string, attachments types.MessageAttachments, imageURLs []string, streamer StreamSender, adapter Adapter, userKey string, tenant *types.Tenant) error {
 	// Start the stream on the IM platform (e.g., create Feishu streaming card)
 	streamID, err := streamer.StartStream(ctx, msg)
 	if err != nil {
 		logger.Warnf(ctx, "[IM] StartStream failed, falling back to non-streaming: %v", err)
-		return s.fallbackNonStream(ctx, msg, session, customAgent, kbIDs, attachments, imageURLs, adapter, userKey, tenant)
+		return s.fallbackNonStream(ctx, channel, msg, session, customAgent, kbIDs, attachments, imageURLs, adapter, userKey, tenant)
 	}
 
 	// Prepare the QA pipeline
@@ -2829,6 +2837,7 @@ loop:
 	bufMu.Unlock()
 
 	finalDisplay := cleanIMContent(ctx, FormatIMFinalFromParts(parts), tenant, s.defaultFileSvc, s.storageResolver)
+	answerFailed := finalErr != nil || noVisibleContent || finalDisplay == ""
 	if noVisibleContent || finalDisplay == "" {
 		fallback := "抱歉，我暂时无法回答这个问题。"
 		if finalErr != nil {
@@ -2863,19 +2872,26 @@ loop:
 		logger.Warnf(ctx, "[IM] Failed to update assistant message: %v", err)
 	}
 
+	// After the answer went out, so a triggered handoff notice follows it.
+	s.noteBotAnswerOutcome(ctx, channel, session, msg, adapter, answerFailed)
+
 	logger.Infof(ctx, "[IM] Stream reply sent: platform=%s user=%s answer_len=%d", msg.Platform, msg.UserID, len(answer))
 	return nil
 }
 
 // fallbackNonStream is used when streaming initialization fails.
-func (s *Service) fallbackNonStream(ctx context.Context, msg *IncomingMessage, session *types.Session, customAgent *types.CustomAgent, kbIDs []string, attachments types.MessageAttachments, imageURLs []string, adapter Adapter, userKey string, tenant *types.Tenant) error {
+func (s *Service) fallbackNonStream(ctx context.Context, channel *IMChannel, msg *IncomingMessage, session *types.Session, customAgent *types.CustomAgent, kbIDs []string, attachments types.MessageAttachments, imageURLs []string, adapter Adapter, userKey string, tenant *types.Tenant) error {
 	answer, err := s.runQA(ctx, session, msg.Content, customAgent, kbIDs, attachments, imageURLs, userKey, msg.Quote)
 	if err != nil {
 		logger.Errorf(ctx, "[IM] QA fallback failed: %v", err)
 		answer = "抱歉，处理您的问题时出现了异常，请稍后再试。"
 	}
 
-	return adapter.SendReply(ctx, msg, &ReplyMessage{Content: formatIMOutboundAnswer(ctx, answer, tenant, s.defaultFileSvc, s.storageResolver), IsFinal: true})
+	if sendErr := adapter.SendReply(ctx, msg, &ReplyMessage{Content: formatIMOutboundAnswer(ctx, answer, tenant, s.defaultFileSvc, s.storageResolver), IsFinal: true}); sendErr != nil {
+		return sendErr
+	}
+	s.noteBotAnswerOutcome(ctx, channel, session, msg, adapter, err != nil)
+	return nil
 }
 
 // runQA executes the WeKnora QA pipeline and returns the full answer text.

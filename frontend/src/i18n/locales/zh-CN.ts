@@ -1044,7 +1044,32 @@ export default {
       sectionSession: '会话设置',
       sectionCallback: '回调地址',
       sectionKnowledge: '文件存储',
-      sectionStatus: '运行状态'
+      sectionStatus: '运行状态',
+      handoff: {
+        section: '转人工',
+        enable: '自动转人工',
+        enableHint: '用户消息命中关键词或机器人连续未能回答时，自动转接人工并通知运营。',
+        keywords: '触发关键词',
+        keywordsPlaceholder: '转人工，人工客服，找客服',
+        keywordsHint: '用户消息包含任一关键词即触发（不区分大小写），多个关键词用逗号分隔。请避免过于宽泛的词（如「人工」会命中「人工智能」）。',
+        fallbackThreshold: '连续未答阈值',
+        fallbackThresholdHint: '机器人连续这么多条消息未能回答（出错或无结果）时触发，0 表示关闭该触发方式。',
+        autoReply: '转接提示语',
+        autoReplyPlaceholder: '已为您转接人工客服，请稍候，人工客服看到后会尽快回复您。',
+        timeout: '人工接管时长（分钟）',
+        timeoutHint: '触发后机器人静默的时长，窗口结束后机器人自动恢复应答。',
+        noTakeoverHint: '当前平台不支持从控制台人工回复：触发后仅发送提示语并通知运营，机器人继续应答。',
+        webhook: '通知 Webhook',
+        webhookHint: '触发时向该地址推送通知，可填企业微信/钉钉/飞书群机器人或 Slack 的 Webhook 地址。',
+        webhookFormat: '通知格式',
+        formatGeneric: '通用 JSON',
+        formatWecom: '企业微信机器人',
+        formatDingtalk: '钉钉机器人',
+        formatFeishu: '飞书机器人',
+        formatSlack: 'Slack',
+        needTrigger: '开启自动转人工后，请至少配置触发关键词或连续未答阈值。',
+        badWebhook: '通知 Webhook 必须是 http(s) 地址。'
+      }
     },
     embed: {
       title: '网页嵌入',

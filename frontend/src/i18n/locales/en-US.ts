@@ -5507,7 +5507,32 @@ export default {
       sectionSession: 'Session',
       sectionCallback: 'Callback URL',
       sectionKnowledge: 'File storage',
-      sectionStatus: 'Status'
+      sectionStatus: 'Status',
+      handoff: {
+        section: 'Human handoff',
+        enable: 'Automatic handoff',
+        enableHint: 'Hand the conversation to a human and notify operators when a message hits a keyword or the bot fails to answer repeatedly.',
+        keywords: 'Trigger keywords',
+        keywordsPlaceholder: 'human agent, live support, talk to a person',
+        keywordsHint: 'Triggers when a user message contains any keyword (case-insensitive); separate keywords with commas. Avoid overly generic words ("AI" would match "AI news").',
+        fallbackThreshold: 'Unanswered-streak threshold',
+        fallbackThresholdHint: 'Triggers after this many consecutive bot replies that failed to answer (error or empty result); 0 turns this trigger off.',
+        autoReply: 'Handoff notice',
+        autoReplyPlaceholder: 'Transferring you to a human agent — they will reply as soon as they see this.',
+        timeout: 'Takeover window (minutes)',
+        timeoutHint: 'How long the bot stays silent after a trigger; it resumes automatically once the window ends.',
+        noTakeoverHint: 'This platform has no console replies: a trigger only sends the notice and notifies operators, the bot keeps answering.',
+        webhook: 'Notification webhook',
+        webhookHint: 'POSTed on every trigger; accepts WeCom/DingTalk/Feishu group-bot or Slack webhook URLs.',
+        webhookFormat: 'Notification format',
+        formatGeneric: 'Generic JSON',
+        formatWecom: 'WeCom bot',
+        formatDingtalk: 'DingTalk bot',
+        formatFeishu: 'Feishu bot',
+        formatSlack: 'Slack',
+        needTrigger: 'With automatic handoff on, configure at least trigger keywords or an unanswered-streak threshold.',
+        badWebhook: 'The notification webhook must be an http(s) URL.'
+      }
     },
     agentType: {
       label: 'Agent Type',

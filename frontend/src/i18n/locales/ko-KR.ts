@@ -1042,7 +1042,32 @@ export default {
       sectionSession: '세션 설정',
       sectionCallback: '콜백 URL',
       sectionKnowledge: '파일 저장',
-      sectionStatus: '실행 상태'
+      sectionStatus: '실행 상태',
+      handoff: {
+        section: '상담원 연결',
+        enable: '자동 상담원 연결',
+        enableHint: '메시지가 키워드에 해당하거나 봇이 연속으로 답하지 못하면 상담원에게 넘기고 운영자에게 알립니다.',
+        keywords: '트리거 키워드',
+        keywordsPlaceholder: '상담원, 사람 연결, 고객센터',
+        keywordsHint: '사용자 메시지에 키워드가 포함되면 트리거됩니다(대소문자 무시). 쉼표로 구분하며, 지나치게 일반적인 단어는 피하세요.',
+        fallbackThreshold: '연속 미응답 임계값',
+        fallbackThresholdHint: '봇이 이 횟수만큼 연속으로 답하지 못하면(오류 또는 결과 없음) 트리거됩니다. 0이면 이 트리거를 끕니다.',
+        autoReply: '연결 안내 문구',
+        autoReplyPlaceholder: '상담원에게 연결해 드리겠습니다. 확인 후 바로 답변드리겠습니다.',
+        timeout: '상담원 응대 시간(분)',
+        timeoutHint: '트리거 후 봇이 침묵하는 시간이며, 시간이 지나면 봇이 자동으로 다시 응답합니다.',
+        noTakeoverHint: '이 플랫폼은 콘솔에서 수동 답장을 지원하지 않습니다. 트리거 시 안내 문구와 알림만 보내고 봇은 계속 응답합니다.',
+        webhook: '알림 Webhook',
+        webhookHint: '트리거될 때마다 이 주소로 POST 알림을 보냅니다. WeCom/DingTalk/Feishu 그룹 봇 또는 Slack Webhook 주소를 지원합니다.',
+        webhookFormat: '알림 형식',
+        formatGeneric: '일반 JSON',
+        formatWecom: 'WeCom 봇',
+        formatDingtalk: 'DingTalk 봇',
+        formatFeishu: 'Feishu 봇',
+        formatSlack: 'Slack',
+        needTrigger: '자동 상담원 연결을 켰다면 트리거 키워드 또는 연속 미응답 임계값 중 하나 이상을 설정하세요.',
+        badWebhook: '알림 Webhook은 http(s) 주소여야 합니다.'
+      }
     },
     embed: {
       title: '웹 페이지 임베드',

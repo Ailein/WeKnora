@@ -95,6 +95,7 @@ func (h *IMHandler) CreateIMChannel(c *gin.Context) {
 		SessionMode     string     `json:"session_mode"`
 		KnowledgeBaseID string     `json:"knowledge_base_id"`
 		Credentials     types.JSON `json:"credentials"`
+		HandoffConfig   types.JSON `json:"handoff_config"`
 		Enabled         *bool      `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -104,6 +105,10 @@ func (h *IMHandler) CreateIMChannel(c *gin.Context) {
 
 	if !validIMPlatforms[req.Platform] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": invalidIMPlatformError})
+		return
+	}
+	if err := im.ValidateHandoffConfigJSON(req.HandoffConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -117,6 +122,7 @@ func (h *IMHandler) CreateIMChannel(c *gin.Context) {
 		SessionMode:     req.SessionMode,
 		KnowledgeBaseID: req.KnowledgeBaseID,
 		Credentials:     req.Credentials,
+		HandoffConfig:   req.HandoffConfig,
 		Enabled:         true,
 	}
 	if req.Enabled != nil {
@@ -207,7 +213,7 @@ func (h *IMHandler) ListAllIMChannels(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id       path      string                  true  "渠道 ID"
-// @Param        request  body      map[string]interface{}  true  "更新字段（name/mode/output_mode/knowledge_base_id/credentials/enabled）"
+// @Param        request  body      map[string]interface{}  true  "更新字段（name/mode/output_mode/knowledge_base_id/credentials/handoff_config/enabled）"
 // @Success      200      {object}  map[string]interface{}  "更新后的渠道"
 // @Failure      400      {object}  map[string]interface{}  "请求参数错误"
 // @Failure      404      {object}  map[string]interface{}  "渠道不存在"
@@ -240,12 +246,19 @@ func (h *IMHandler) UpdateIMChannel(c *gin.Context) {
 		SessionMode     *string    `json:"session_mode"`
 		KnowledgeBaseID *string    `json:"knowledge_base_id"`
 		Credentials     types.JSON `json:"credentials"`
+		HandoffConfig   types.JSON `json:"handoff_config"`
 		Enabled         *bool      `json:"enabled"`
 		AgentID         *string    `json:"agent_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if req.HandoffConfig != nil {
+		if err := im.ValidateHandoffConfigJSON(req.HandoffConfig); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	if req.Name != nil {
@@ -270,6 +283,9 @@ func (h *IMHandler) UpdateIMChannel(c *gin.Context) {
 	}
 	if req.Credentials != nil {
 		channel.Credentials = im.MergeUpdatedCredentials(channel.Platform, channel.Credentials, req.Credentials)
+	}
+	if req.HandoffConfig != nil {
+		channel.HandoffConfig = req.HandoffConfig
 	}
 	if req.Enabled != nil {
 		channel.Enabled = *req.Enabled

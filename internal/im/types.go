@@ -28,7 +28,11 @@ type IMChannel struct {
 	BotIdentity     string         `json:"bot_identity"      gorm:"type:varchar(255);not null;default:'';uniqueIndex:idx_im_channels_bot_identity,where:deleted_at IS NULL AND bot_identity != ''"`
 	SessionMode     string         `json:"session_mode"      gorm:"type:varchar(20);not null;default:'user'"`
 	Credentials     types.JSON     `json:"credentials"       gorm:"type:jsonb;not null;default:'{}'"`
-	CreatedAt       time.Time      `json:"created_at"`
+	// HandoffConfig holds the automatic human-handoff trigger settings
+	// (keywords, fallback threshold, auto-reply, notification webhook).
+	// See HandoffConfig / ParseHandoffConfig in handoff.go for the shape.
+	HandoffConfig types.JSON `json:"handoff_config" gorm:"type:jsonb;not null;default:'{}'"`
+	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt `json:"deleted_at"  gorm:"index"`
 }
@@ -57,6 +61,9 @@ type IMChannelSummary struct {
 	SessionMode           string     `json:"session_mode"`
 	CredentialsConfigured bool       `json:"credentials_configured"`
 	Credentials           types.JSON `json:"credentials,omitempty"`
+	// HandoffConfig is safe to expose on all platforms: it holds operator
+	// trigger settings, not platform secrets, and the edit form needs it back.
+	HandoffConfig types.JSON `json:"handoff_config,omitempty"`
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 }
@@ -76,6 +83,7 @@ func SummarizeIMChannel(ch IMChannel) IMChannelSummary {
 		BotIdentity:           ch.BotIdentity,
 		SessionMode:           ch.SessionMode,
 		CredentialsConfigured: imCredentialsConfigured(ch.Credentials),
+		HandoffConfig:         ch.HandoffConfig,
 		CreatedAt:             ch.CreatedAt,
 		UpdatedAt:             ch.UpdatedAt,
 	}
@@ -128,6 +136,11 @@ func (ch *IMChannel) BeforeCreate(tx *gorm.DB) error {
 func (ch *IMChannel) BeforeSave(tx *gorm.DB) error {
 	if ch.SessionMode == "" {
 		ch.SessionMode = string(SessionModeUser)
+	}
+	// Save() writes every field, so an unset JSON column must fall back to '{}'
+	// or it would violate NOT NULL.
+	if len(ch.HandoffConfig) == 0 {
+		ch.HandoffConfig = types.JSON("{}")
 	}
 	if err := ch.validateSessionMode(); err != nil {
 		return err
@@ -259,11 +272,17 @@ type ChannelSession struct {
 	// HandlingTimeoutMinutes is the takeover window length chosen by the
 	// operator; each manual reply refreshes HandlingExpiresAt to now+timeout so
 	// the bot never barges into an ongoing human conversation. 0 = no expiry.
-	HandlingTimeoutMinutes int            `json:"handling_timeout_minutes" gorm:"not null;default:0"`
-	Metadata               types.JSON     `json:"metadata"      gorm:"type:jsonb;default:'{}'"`
-	CreatedAt              time.Time      `json:"created_at"`
-	UpdatedAt              time.Time      `json:"updated_at"`
-	DeletedAt              gorm.DeletedAt `json:"deleted_at"    gorm:"index"`
+	HandlingTimeoutMinutes int `json:"handling_timeout_minutes" gorm:"not null;default:0"`
+	// ConsecutiveFailures counts the bot's unanswered messages in a row (reset
+	// on every answered one); the handoff fallback trigger fires off it.
+	ConsecutiveFailures int `json:"consecutive_failures" gorm:"not null;default:0"`
+	// HandoffNotifiedAt is when this conversation last fired a handoff
+	// notification; repeated triggers within the cooldown stay silent.
+	HandoffNotifiedAt *time.Time     `json:"handoff_notified_at"`
+	Metadata          types.JSON     `json:"metadata"      gorm:"type:jsonb;default:'{}'"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	DeletedAt         gorm.DeletedAt `json:"deleted_at"    gorm:"index"`
 }
 
 func (ChannelSession) TableName() string {
