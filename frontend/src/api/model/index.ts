@@ -215,6 +215,44 @@ export async function deleteModelCredentialField(
   await del(`/api/v1/models/${id}/credentials/${field}`)
 }
 
+// ----------------------------------------------------------------------------
+// Codex（ChatGPT 订阅）OAuth 授权登录。redirect URI 被 OpenAI 固定为
+// http://localhost:1455/auth/callback：浏览器与后端同机时回调自动完成，
+// 否则用户把回调 URL 粘贴给 exchange 接口兜底。
+// ----------------------------------------------------------------------------
+
+export interface CodexOAuthStartResult {
+  state: string
+  authorization_url: string
+  /** 后端是否成功监听 :1455（失败时只能走粘贴回调 URL 的兜底） */
+  callback_listening: boolean
+}
+
+export interface CodexOAuthResult {
+  status: 'pending' | 'complete' | 'error'
+  access_token?: string
+  refresh_token?: string
+  email?: string
+  plan?: string
+  expires_at?: string
+  error?: string
+}
+
+export async function startCodexOAuth(): Promise<CodexOAuthStartResult> {
+  const response: any = await post('/api/v1/codex/oauth/start', {})
+  return (response.data ?? response) as CodexOAuthStartResult
+}
+
+export async function getCodexOAuthStatus(state: string): Promise<CodexOAuthResult> {
+  const response: any = await get(`/api/v1/codex/oauth/status?state=${encodeURIComponent(state)}`)
+  return (response.data ?? response) as CodexOAuthResult
+}
+
+export async function exchangeCodexOAuth(state: string, input: string): Promise<CodexOAuthResult> {
+  const response: any = await post('/api/v1/codex/oauth/exchange', { state, input })
+  return (response.data ?? response) as CodexOAuthResult
+}
+
 export interface InitializeWeKnoraCloudRequest {
   app_id: string
   app_secret: string

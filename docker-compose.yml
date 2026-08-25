@@ -36,6 +36,11 @@ services:
     container_name: WeKnora-app
     ports:
       - "${APP_PORT:-8080}:8080"
+      # Codex (ChatGPT 订阅) OAuth 登录回调。OpenAI 把 redirect URI 固定为
+      # http://localhost:1455/auth/callback，所以浏览器与 compose 同机时才能
+      # 自动回填；异机部署走前端的「粘贴回调 URL」兜底。绑 127.0.0.1 即可，
+      # 无需暴露到局域网。
+      - "${CODEX_OAUTH_BIND:-127.0.0.1}:1455:1455"
     volumes:
       - data-files:/data/files
       - docreader-tmp:/tmp/docreader:ro

@@ -1873,6 +1873,108 @@ const docTemplate = `{
                 }
             }
         },
+        "/codex/oauth/exchange": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "浏览器跳转 localhost:1455 失败时，把回调 URL（或授权码）粘贴到此端点完成令牌交换",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "模型"
+                ],
+                "summary": "手动提交 Codex OAuth 回调",
+                "parameters": [
+                    {
+                        "description": "{state: string, input: string}",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{status, access_token?, refresh_token?, email?, plan?}",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/codex/oauth/start": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "生成 PKCE 授权链接并在 :1455 启动本地回调监听；前端打开链接后轮询 status",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "模型"
+                ],
+                "summary": "发起 Codex (ChatGPT 订阅) OAuth 授权",
+                "responses": {
+                    "200": {
+                        "description": "{state, authorization_url, callback_listening}",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/codex/oauth/status": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "pending 时继续轮询；complete 时一次性返回 access/refresh token（随后即失效）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "模型"
+                ],
+                "summary": "查询 Codex OAuth 授权进度",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "start 返回的 state",
+                        "name": "state",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{status, access_token?, refresh_token?, email?, plan?, error?}",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/datasource": {
             "get": {
                 "description": "List all data sources for a specific knowledge base",

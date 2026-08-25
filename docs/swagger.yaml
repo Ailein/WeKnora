@@ -7460,6 +7460,70 @@ paths:
       summary: 删除生成的问题
       tags:
       - 分块管理
+  /codex/oauth/exchange:
+    post:
+      consumes:
+      - application/json
+      description: 浏览器跳转 localhost:1455 失败时，把回调 URL（或授权码）粘贴到此端点完成令牌交换
+      parameters:
+      - description: '{state: string, input: string}'
+        in: body
+        name: request
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{status, access_token?, refresh_token?, email?, plan?}'
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: 手动提交 Codex OAuth 回调
+      tags:
+      - 模型
+  /codex/oauth/start:
+    post:
+      description: 生成 PKCE 授权链接并在 :1455 启动本地回调监听；前端打开链接后轮询 status
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{state, authorization_url, callback_listening}'
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: 发起 Codex (ChatGPT 订阅) OAuth 授权
+      tags:
+      - 模型
+  /codex/oauth/status:
+    get:
+      description: pending 时继续轮询；complete 时一次性返回 access/refresh token（随后即失效）
+      parameters:
+      - description: start 返回的 state
+        in: query
+        name: state
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{status, access_token?, refresh_token?, email?, plan?, error?}'
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: 查询 Codex OAuth 授权进度
+      tags:
+      - 模型
   /datasource:
     get:
       description: List all data sources for a specific knowledge base

@@ -108,6 +108,18 @@ func RegisterInitializationRoutes(r *gin.RouterGroup, handler *handler.Initializ
 	g.apiKeyRoute(r, http.MethodPost, "/initialization/extract/fabri-text", apiKeyManageModels(apiKeyFullAccess()), g.Admin(), handler.FabriText)
 }
 
+// RegisterCodexOAuthRoutes wires the "Sign in with ChatGPT" flow for the
+// Codex (ChatGPT subscription) model provider. All three endpoints hand out
+// or produce tenant-level model credentials, so they sit behind the same
+// Admin+ / manage_models gate as the credential subresource. The :1455
+// browser callback is NOT a gin route — the handler runs its own listener
+// (OpenAI fixes the redirect URI at localhost:1455).
+func RegisterCodexOAuthRoutes(r *gin.RouterGroup, h *handler.CodexOAuthHandler, g *rbacGuards) {
+	g.apiKeyRoute(r, http.MethodPost, "/codex/oauth/start", apiKeyManageModels(apiKeyFullAccess()), g.Admin(), h.Start)
+	g.apiKeyRoute(r, http.MethodGet, "/codex/oauth/status", apiKeyManageModels(apiKeyFullAccess()), g.Admin(), h.Status)
+	g.apiKeyRoute(r, http.MethodPost, "/codex/oauth/exchange", apiKeyManageModels(apiKeyFullAccess()), g.Admin(), h.Exchange)
+}
+
 // RegisterMCPServiceRoutes registers MCP service routes.
 //
 // MCP services are tenant-level integrations (external tool servers); we

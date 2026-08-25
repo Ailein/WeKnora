@@ -233,7 +233,42 @@
             <t-input v-model="formData.baseUrl" :placeholder="getBaseUrlPlaceholder()" />
           </div>
 
-          <!-- Codex（ChatGPT 订阅）：粘贴 auth.json 自动提取凭证（创建模式） -->
+          <!-- Codex（ChatGPT 订阅）：授权登录，自动获取并填入令牌（创建/编辑均可用） -->
+          <div v-if="isCodex" class="form-item">
+            <label class="form-label">{{ $t('model.editor.codex.oauthLabel') }}</label>
+            <div class="codex-oauth-row">
+              <t-button theme="primary" variant="outline" :loading="codexOAuthPolling" @click="startCodexLogin">
+                <template #icon><t-icon name="jump" /></template>
+                {{ codexOAuthDone ? $t('model.editor.codex.oauthButtonAgain') : $t('model.editor.codex.oauthButton') }}
+              </t-button>
+              <span v-if="codexOAuthPolling" class="codex-oauth-waiting">
+                {{ $t('model.editor.codex.oauthWaiting') }}
+              </span>
+              <span v-else-if="codexOAuthDone" class="codex-auth-ok codex-oauth-result">
+                <t-icon name="check-circle-filled" /> {{ codexOAuthDoneText }}
+              </span>
+              <span v-else-if="codexOAuthError" class="codex-auth-error codex-oauth-result">
+                <t-icon name="error-circle-filled" /> {{ codexOAuthError }}
+              </span>
+            </div>
+            <!-- 兜底：浏览器跳到 localhost:1455 失败（异机部署 / 端口没通）时，
+                 把回调页地址栏的完整 URL 粘贴进来完成交换 -->
+            <div v-if="codexOAuthPolling" class="codex-oauth-paste">
+              <t-input v-model="codexOAuthPasteInput" size="small"
+                :placeholder="$t('model.editor.codex.oauthPastePlaceholder')" autocomplete="off" spellcheck="false" />
+              <t-button size="small" variant="outline" :loading="codexOAuthPasteSubmitting"
+                :disabled="!codexOAuthPasteInput.trim()" @click="submitCodexOAuthPaste">
+                {{ $t('model.editor.codex.oauthPasteSubmit') }}
+              </t-button>
+            </div>
+            <p class="form-desc">
+              {{ codexOAuthListening === false
+                ? $t('model.editor.codex.oauthListenerDown')
+                : $t('model.editor.codex.oauthHint') }}
+            </p>
+          </div>
+
+          <!-- Codex（ChatGPT 订阅）：粘贴 auth.json 手动导入（创建模式的兜底） -->
           <div v-if="isCodex && !isEdit" class="form-item">
             <label class="form-label">{{ $t('model.editor.codex.authJsonLabel') }}</label>
             <t-textarea v-model="codexAuthJson" :placeholder="$t('model.editor.codex.authJsonPlaceholder')"
@@ -423,7 +458,11 @@ import {
   getWeKnoraCloudStatus,
   putModelCredentials,
   deleteModelCredentialField,
+  startCodexOAuth,
+  getCodexOAuthStatus,
+  exchangeCodexOAuth,
   type ModelCredentialField,
+  type CodexOAuthResult,
 } from '@/api/model'
 import { useI18n } from 'vue-i18n'
 import { useUIStore } from '@/stores/ui'
@@ -784,6 +823,142 @@ const parseCodexAuthJson = () => {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Codex OAuth 授权登录（Sign in with ChatGPT）。点按钮 → 后端生成 PKCE 授权
+// 链接并监听 localhost:1455 → 弹窗完成登录 → 轮询拿到令牌自动填入。
+// 浏览器与后端异机时，用户把回调 URL 粘贴到兜底输入框完成交换。
+// ---------------------------------------------------------------------------
+const CODEX_OAUTH_POLL_MS = 2000
+const CODEX_OAUTH_DEADLINE_MS = 10 * 60 * 1000
+
+const codexOAuthPolling = ref(false)
+const codexOAuthFlowState = ref('')
+const codexOAuthListening = ref<boolean | null>(null)
+const codexOAuthDone = ref<{ email?: string; plan?: string } | null>(null)
+const codexOAuthError = ref('')
+const codexOAuthPasteInput = ref('')
+const codexOAuthPasteSubmitting = ref(false)
+let codexOAuthTimer: ReturnType<typeof setInterval> | null = null
+let codexOAuthPollBusy = false
+
+const codexOAuthDoneText = computed(() => {
+  const done = codexOAuthDone.value
+  if (!done) return ''
+  const account = done.email ? (done.plan ? `${done.email} · ${done.plan}` : done.email) : ''
+  if (!account) return t('model.editor.codex.oauthSuccessNoProfile')
+  return t(
+    isEdit.value ? 'model.editor.codex.oauthSuccessSaved' : 'model.editor.codex.oauthSuccess',
+    { account },
+  )
+})
+
+const stopCodexOAuthPolling = () => {
+  if (codexOAuthTimer) {
+    clearInterval(codexOAuthTimer)
+    codexOAuthTimer = null
+  }
+  codexOAuthPollBusy = false
+  codexOAuthPolling.value = false
+}
+
+const resetCodexOAuth = () => {
+  stopCodexOAuthPolling()
+  codexOAuthFlowState.value = ''
+  codexOAuthListening.value = null
+  codexOAuthDone.value = null
+  codexOAuthError.value = ''
+  codexOAuthPasteInput.value = ''
+}
+
+const applyCodexOAuthResult = async (res: CodexOAuthResult) => {
+  stopCodexOAuthPolling()
+  if (res.status === 'complete' && res.access_token) {
+    if (isEdit.value && props.modelData?.id) {
+      // 编辑模式：模型已存在，令牌直接写入凭证子资源，不经过表单。
+      try {
+        await putModelCredentials(props.modelData.id, {
+          api_key: res.access_token,
+          refresh_token: res.refresh_token || '',
+        })
+      } catch (e: any) {
+        codexOAuthError.value = e?.message || t('model.editor.codex.oauthFailed')
+        return
+      }
+      MessagePlugin.success(t('model.editor.codex.oauthCredentialSaved'))
+    } else {
+      formData.value.apiKey = res.access_token
+      formData.value.refreshToken = res.refresh_token || ''
+      codexAuthJson.value = ''
+      codexAuthParseState.value = 'idle'
+    }
+    codexOAuthDone.value = { email: res.email, plan: res.plan }
+    codexOAuthError.value = ''
+  } else if (res.status === 'error') {
+    codexOAuthError.value = res.error || t('model.editor.codex.oauthFailed')
+  } else {
+    codexOAuthError.value = t('model.editor.codex.oauthFailed')
+  }
+}
+
+const startCodexLogin = async () => {
+  resetCodexOAuth()
+  try {
+    const startRes = await startCodexOAuth()
+    codexOAuthFlowState.value = startRes.state
+    codexOAuthListening.value = startRes.callback_listening
+    window.open(startRes.authorization_url, '_blank', 'width=600,height=760')
+    codexOAuthPolling.value = true
+    const deadline = Date.now() + CODEX_OAUTH_DEADLINE_MS
+    codexOAuthTimer = setInterval(async () => {
+      if (codexOAuthPollBusy || !codexOAuthPolling.value) return
+      if (Date.now() > deadline) {
+        stopCodexOAuthPolling()
+        codexOAuthError.value = t('model.editor.codex.oauthTimeout')
+        return
+      }
+      codexOAuthPollBusy = true
+      try {
+        const res = await getCodexOAuthStatus(codexOAuthFlowState.value)
+        if (res.status !== 'pending') await applyCodexOAuthResult(res)
+      } catch {
+        // 404 = 流程已过期或被消费；停止轮询并提示重来。
+        stopCodexOAuthPolling()
+        codexOAuthError.value = t('model.editor.codex.oauthExpired')
+      } finally {
+        codexOAuthPollBusy = false
+      }
+    }, CODEX_OAUTH_POLL_MS)
+  } catch (e: any) {
+    stopCodexOAuthPolling()
+    codexOAuthError.value = e?.message || t('model.editor.codex.oauthFailed')
+  }
+}
+
+const submitCodexOAuthPaste = async () => {
+  const input = codexOAuthPasteInput.value.trim()
+  if (!input || !codexOAuthFlowState.value) return
+  codexOAuthPasteSubmitting.value = true
+  try {
+    const res = await exchangeCodexOAuth(codexOAuthFlowState.value, input)
+    // pending = :1455 回调已抢先处理，留给轮询接管终态。
+    if (res.status !== 'pending') await applyCodexOAuthResult(res)
+  } catch (e: any) {
+    stopCodexOAuthPolling()
+    codexOAuthError.value = e?.message || t('model.editor.codex.oauthFailed')
+  } finally {
+    codexOAuthPasteSubmitting.value = false
+  }
+}
+
+// 切换到其他厂商时终止授权流程，避免残留轮询。
+watch(isCodex, (val) => {
+  if (!val) resetCodexOAuth()
+})
+
+onUnmounted(() => {
+  stopCodexOAuthPolling()
+})
+
 const isLkeapRerank = computed(
   () => activeModelType.value === 'rerank' && formData.value.provider === 'lkeap',
 )
@@ -1138,6 +1313,7 @@ watch(() => props.visible, (val) => {
         }
         codexAuthJson.value = ''
         codexAuthParseState.value = 'idle'
+        resetCodexOAuth()
         applyThinkingControlFromModelData()
       } else if (lastOpenedModelId.value !== null || !formData.value.id) {
         // 上次是编辑某个模型，或第一次新增 → 重置成空白
@@ -1166,6 +1342,9 @@ watch(() => props.visible, (val) => {
         hydratingForm.value = false
       })
     }
+  } else {
+    // 关闭抽屉即视为放弃本次授权等待（表单值本身按原有规则保留）。
+    stopCodexOAuthPolling()
   }
 })
 
@@ -1195,6 +1374,7 @@ const resetForm = () => {
   }
   codexAuthJson.value = ''
   codexAuthParseState.value = 'idle'
+  resetCodexOAuth()
   modelChecked.value = false
   modelAvailable.value = false
   remoteChecked.value = false
@@ -2281,6 +2461,33 @@ const handleCancel = () => {
 
 .codex-auth-error {
   color: var(--td-error-color) !important;
+}
+
+// Codex ChatGPT 授权登录
+.codex-oauth-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.codex-oauth-waiting {
+  font-size: 12px;
+  color: var(--td-text-color-secondary);
+}
+
+.codex-oauth-result {
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.codex-oauth-paste {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .form-desc {
