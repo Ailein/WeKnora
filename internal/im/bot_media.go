@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/integrationassets"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/utils"
 )
@@ -36,9 +37,11 @@ const (
 )
 
 // botImageMarkdownRe matches a markdown image whose target is an absolute
-// http(s) URL, with an optional title. Relative and data: targets are left
-// alone — only fetchable URLs can become attachments.
-var botImageMarkdownRe = regexp.MustCompile(`!\[([^\]\n]*)\]\(\s*(https?://[^)\s]+?)(?:\s+"[^"]*")?\s*\)`)
+// http(s) URL or a local integration-asset path, with an optional title.
+// Other relative and data: targets are left alone — only fetchable
+// references can become attachments.
+var botImageMarkdownRe = regexp.MustCompile(
+	`!\[([^\]\n]*)\]\(\s*((?:https?://|` + integrationassets.URLPrefix + `)[^)\s]+?)(?:\s+"[^"]*")?\s*\)`)
 
 var botImageHTTPClient = utils.NewSSRFSafeHTTPClient(utils.SSRFSafeHTTPClientConfig{
 	Timeout:      botImageFetchTimeout,
@@ -46,8 +49,13 @@ var botImageHTTPClient = utils.NewSSRFSafeHTTPClient(utils.SSRFSafeHTTPClientCon
 })
 
 // fetchBotImage downloads one image URL and returns its payload and MIME
-// type. Package variable so tests can stub the network.
+// type. Package variable so tests can stub the network. Integration-asset
+// references are read from disk — they are the app's own public static
+// files, so a loopback HTTP round-trip would only add SSRF friction.
 var fetchBotImage = func(ctx context.Context, rawURL string) ([]byte, string, error) {
+	if strings.HasPrefix(rawURL, integrationassets.URLPrefix) {
+		return integrationassets.ResolveURLPath(rawURL)
+	}
 	if err := utils.ValidateURLForSSRF(rawURL); err != nil {
 		return nil, "", fmt.Errorf("URL rejected by SSRF policy: %w", err)
 	}

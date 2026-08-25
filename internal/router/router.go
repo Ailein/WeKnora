@@ -174,6 +174,10 @@ func NewRouter(params RouterParams) *gin.Engine {
 	// WeKnora authentication headers.
 	serveResourceGrants(r, params.ResourceCatalog, params.TenantService, params.FileService, params.StorageBackendResolver)
 
+	// Public integration assets (QR codes etc.): loaded by bare <img> tags in
+	// chat markdown, so they must stay ahead of the auth middleware too.
+	serveIntegrationAssets(r)
+
 	// 认证中间件
 	r.Use(middleware.Auth(params.TenantService, params.UserService, params.TenantMemberService, params.TenantAPIKeyService, params.Config))
 

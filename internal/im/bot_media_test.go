@@ -3,6 +3,8 @@ package im
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -108,6 +110,30 @@ func TestExtractBotImageAttachmentsTitleAndNoExt(t *testing.T) {
 		t.Fatalf("extension not derived from mime: %q", atts[0].FileName)
 	}
 	if cleaned != "pre  post" {
+		t.Fatalf("unexpected cleaned text: %q", cleaned)
+	}
+}
+
+func TestExtractBotImageAttachmentsIntegrationAssetPath(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "demo", "assets")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "qr.png"), []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WEKNORA_INTEGRATIONS_DIR", base)
+
+	content := "Scan:\n\n![QR](/api/v1/integration-assets/demo/qr.png)\n\nDone"
+	cleaned, atts := extractBotImageAttachments(context.Background(), content, PlatformWhatsApp)
+	if len(atts) != 1 {
+		t.Fatalf("want 1 attachment, got %d", len(atts))
+	}
+	if atts[0].MimeType != "image/png" || atts[0].FileName != "qr.png" || string(atts[0].Data) != "png-bytes" {
+		t.Fatalf("unexpected attachment: %+v", atts[0])
+	}
+	if cleaned != "Scan:\n\nDone" {
 		t.Fatalf("unexpected cleaned text: %q", cleaned)
 	}
 }
