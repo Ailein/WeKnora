@@ -234,7 +234,8 @@ def ensure_mcp_service(api: Api) -> str:
     return svc["id"]
 
 
-def ensure_agent(api: Api, kb_id: str, mcp_id: str, chat_model: str, rerank_model: str) -> str:
+def ensure_agent(api: Api, kb_id: str, mcp_id: str, chat_model: str,
+                 rerank_model: str, asr_model: str) -> str:
     prompt = (HERE / "system_prompt.md").read_text(encoding="utf-8")
     config = {
         "agent_mode": "smart-reasoning",
@@ -242,8 +243,14 @@ def ensure_agent(api: Api, kb_id: str, mcp_id: str, chat_model: str, rerank_mode
         "system_prompt": prompt,
         "model_id": chat_model,
         "rerank_model_id": rerank_model,
-        "temperature": 0.7,
+        # Low temperature: menu listings must be copied verbatim from retrieved
+        # documents; at 0.7 the model drifted mid-table and invented items.
+        "temperature": 0.3,
         "max_iterations": 10,
+        # The model must call at least one tool on round 1 (tool_choice=
+        # "required"): stops it answering menu questions from memory with
+        # fabricated items. Prompt-only guards proved unreliable here.
+        "force_tool_first_round": True,
         "allowed_tools": ALLOWED_TOOLS,
         "mcp_selection_mode": "selected",
         "mcp_services": [mcp_id],
@@ -251,6 +258,11 @@ def ensure_agent(api: Api, kb_id: str, mcp_id: str, chat_model: str, rerank_mode
         "knowledge_bases": [kb_id],
         "citation_enabled": False,
     }
+    if asr_model:
+        # WhatsApp voice notes get transcribed with this model before QA
+        # (internal/im/voice.go requires both fields on the agent).
+        config["audio_upload_enabled"] = True
+        config["asr_model_id"] = asr_model
     agents = api.get("/agents").get("data") or []
     existing = next((a for a in agents if a.get("name") == AGENT_NAME), None)
     body = {
@@ -295,14 +307,16 @@ def main():
     # tier runs out of quota quickly on a 72-document import.
     embedding_model = pick("Embedding", "bge") or pick("Embedding")
     rerank_model = pick("Rerank")
+    asr_model = pick("ASR")  # optional: enables WhatsApp voice-note transcription
     if not (chat_model and embedding_model):
         sys.exit("need at least one KnowledgeQA model and one Embedding model configured in WeKnora")
-    print(f"[models] chat={chat_model} embedding={embedding_model} rerank={rerank_model or '(none)'}")
+    print(f"[models] chat={chat_model} embedding={embedding_model} "
+          f"rerank={rerank_model or '(none)'} asr={asr_model or '(none)'}")
 
     kb_id = ensure_kb(api, embedding_model, chat_model)
     upload_documents(api, kb_id, collect_documents(workspace))
     mcp_id = ensure_mcp_service(api)
-    agent_id = ensure_agent(api, kb_id, mcp_id, chat_model, rerank_model)
+    agent_id = ensure_agent(api, kb_id, mcp_id, chat_model, rerank_model, asr_model)
 
     print("\n=== done ===")
     print(f"knowledge base: {kb_id}\nmcp service:    {mcp_id}\nagent:          {agent_id}")

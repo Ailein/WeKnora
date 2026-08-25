@@ -175,6 +175,11 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		Thinking:          e.config.Thinking,
 		ParallelToolCalls: &parallelToolCalls,
 	}
+	forcingToolChoice := e.config.ForceToolFirstRound && iteration == 0 && len(tools) > 0 && !e.forcedToolChoiceOff
+	if forcingToolChoice {
+		opts.ToolChoice = "required"
+		logger.Infof(ctx, "[Agent][Thinking] Iteration-1: forcing tool_choice=required (force_tool_first_round)")
+	}
 
 	pendingToolCalls := make(map[string]bool)
 	thinkingToolIDs := make(map[string]string) // tool_call_id -> event ID for thinking tool streams
@@ -223,6 +228,15 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	}
 	emitAnswer := func(content string) {
 		if content == "" {
+			return
+		}
+		// While tool_choice is forced, hold answer text back from the live
+		// stream: providers that silently ignore "required" (e.g. MiniMax)
+		// would otherwise stream a from-memory answer to the user before the
+		// caller can detect the violation and retry. If the round does call
+		// tools this text was only preamble; if it ends up being the accepted
+		// final answer, observe re-emits it in full (AnswerStreamed=false).
+		if forcingToolChoice {
 			return
 		}
 		// Suppress whitespace-only content emitted before the real answer has
@@ -422,6 +436,16 @@ func (e *AgentEngine) callLLMWithRetry(
 	messages = agenttools.SanitizeMessages(messages)
 
 	response, err := e.streamThinkingToEventBus(ctx, messages, tools, iteration, sessionID)
+	// If the provider rejected the forced tool_choice="required" (non-transient
+	// error on the round that sent it), drop the forcing for this request and
+	// retry once so unsupported providers degrade to normal behavior.
+	if err != nil && !isTransientError(err) &&
+		e.config.ForceToolFirstRound && iteration == 0 && !e.forcedToolChoiceOff {
+		e.forcedToolChoiceOff = true
+		logger.Warnf(ctx, "[Agent][Round-%d] LLM call failed with forced tool_choice, retrying without it: %v",
+			round, err)
+		response, err = e.streamThinkingToEventBus(ctx, messages, tools, iteration, sessionID)
+	}
 	if err != nil && isTransientError(err) {
 		// Retry transient errors (timeout, rate limit, server errors) up to maxLLMRetries times
 		for retry := 1; retry <= maxLLMRetries; retry++ {
@@ -434,6 +458,29 @@ func (e *AgentEngine) callLLMWithRetry(
 			if err == nil || !isTransientError(err) {
 				break
 			}
+		}
+	}
+	// Second line of defense for force_tool_first_round: some providers accept
+	// tool_choice="required" without error but silently ignore it (observed with
+	// MiniMax) and answer from memory. The forced round buffers its answer
+	// instead of streaming (see streamThinkingToEventBus), so nothing reached
+	// the user yet — retry once with an explicit reminder. If the model still
+	// refuses to call a tool, accept the original answer rather than loop.
+	if err == nil && response != nil && len(response.ToolCalls) == 0 && len(tools) > 0 &&
+		e.config.ForceToolFirstRound && iteration == 0 && !e.forcedToolChoiceOff {
+		logger.Warnf(ctx, "[Agent][Round-%d] Provider ignored tool_choice=required (0 tool calls, %d chars); retrying with reminder",
+			round, len(response.Content))
+		reminded := append(append([]chat.Message{}, messages...), chat.Message{
+			Role: "system",
+			Content: "You answered without calling any tool. You must call at least one tool " +
+				"before answering this question — do not answer from memory. Call a tool now.",
+		})
+		if retryResp, retryErr := e.streamThinkingToEventBus(ctx, reminded, tools, iteration, sessionID); retryErr == nil &&
+			retryResp != nil && len(retryResp.ToolCalls) > 0 {
+			response = retryResp
+		} else {
+			logger.Warnf(ctx, "[Agent][Round-%d] Reminder retry still produced no tool calls (err=%v); accepting the buffered answer",
+				round, retryErr)
 		}
 	}
 	if err != nil {

@@ -122,6 +122,7 @@ UI → 智能体 → Togather 客服小灵，过一遍验收用例：
 | 用例 | 期望 |
 |---|---|
 | `any pizza?` | 列出全部 4 款披萨（P1/P18/P8/P3）+ 价格 + 菜单 URL；必须先检索（无编造菜品/编号） |
+| `煲仔套餐` | 先 grep 定位再 `list_knowledge_chunks` 取整篇，列全 10 项（C224/C225/C226/C134/C137/C138/C135/C139/C131/C227），C134=RM19.90；无 C199-C203 之类编造编号，中文名逐字来自 MENU_CN（如"马泰乡村炸蛋鸡煲"） |
 | `全部菜单发一下` | 秒回分类总览（25 类，早餐标注 5 家分店）+ URL + 问想看哪类；**不**逐项列全部菜品 |
 | `你们有什么披萨？` | 中文菜名（MENU_CN）、价格一致 |
 | `I am at Bandar Puchong Jaya 47170, which outlet is nearest?` | 调 `mcp_togather_distance_togather_nearest_store`，答 Puchong ~527m + 地址 + 地图链接 |
@@ -157,9 +158,10 @@ WeKnora 和 openclaw 都是 WhatsApp Web 协议的 companion 设备，**同一�
 - **改门店**（新店/换址/电话）：改 `integrations/togather-distance/stores.json`（含 lat/lng），MCP 每次调用现读，**不用重启**；同时更新 openclaw workspace 的 `STORES.md` 并重导对应知识文档。
 - **改菜单/政策知识**：改 `~/.openclaw/workspace-togather-cs/*.md` 后，在 UI 删掉对应旧文档再重跑 `setup.py`（脚本按文件名跳过已存在文档，不删不会更新）。
 - **改人格/规则**：改 `integrations/togather-cs/system_prompt.md` 重跑 `setup.py`（agent 是按名字更新的，直接生效）。
+- **防幻觉硬开关**：agent 配置里 `force_tool_first_round: true`（setup.py 已带）强制模型第一轮必须调工具才能作答，杜绝"不检索直接编菜单"。该字段需要 app 镜像 ≥ 本仓库 2026-08-25 版本——正式服务器 `git pull` 后先 `docker compose build app && docker compose up -d app` 再跑 `setup.py`，否则旧版 app 反序列化会丢掉这个字段。若换用不支持 `tool_choice:"required"` 的模型供应商，引擎会自动降级为普通行为（看日志 `retrying without it`）。
 
 ## 已知未迁移项
 
-- **语音消息转写**：需在 WeKnora 配一个 ASR 模型后到 agent/渠道设置里启用（openclaw 侧原来用 agent 的 ASR）。
-- **会员 App QR 码图片**：两张 QR 图未迁，system prompt 已按"发下载链接"兜底；如需发图，把 `workspace-togather-cs/assets/` 两张图配置到 IM 渠道的素材里再更新提示词。
+- **语音消息转写**：✅ 已接入。WeKnora 配好 type=ASR 的模型后重跑 `setup.py`，脚本会自动挑选并写入 agent 的 `audio_upload_enabled: true` + `asr_model_id`（两个字段都在 agent 上，IM 渠道没有单独开关）。WhatsApp 语音条进来会先转写再进 QA（`internal/im/voice.go`，16 MiB 上限、2 分钟超时）；目前只有 WhatsApp 渠道会触发转写。可用 `POST /api/v1/initialization/asr/check` 验证模型连通。
+- **会员 App QR 码图片**：两张 QR 图未迁，system prompt 已按"发下载链接"兜底。WeKnora 的 agent 自动回复**不支持携带图片附件**（`ReplyMessage.Attachments` 只有人工坐席手动回复会填，且仅 WhatsApp 支持媒体），也没有"渠道素材库"功能——如需 bot 主动发 QR 图，属于新功能开发；短期可由人工坐席在收件箱里手动发图（`workspace-togather-cs/assets/` 两张 PNG）。
 - CRM 收集（openclaw 的 nova-crm-collector）：WeKnora 侧未对接，用收件箱 + IM 分析看板替代。

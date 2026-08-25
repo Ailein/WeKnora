@@ -52,6 +52,9 @@ type AgentEngine struct {
 	lastUsage            types.TokenUsage          // Token usage from the most recent LLM call
 	lastSentMsgCount     int                       // Number of messages sent in the most recent LLM call
 	modelContext         *modelcontext.Registry    // single request-local boundary for every model handle
+	// forcedToolChoiceOff disables ForceToolFirstRound for the rest of this request
+	// after a provider rejected tool_choice="required" (engine is request-local).
+	forcedToolChoiceOff bool
 }
 
 // ImageDescriberFunc generates a text description of an image.

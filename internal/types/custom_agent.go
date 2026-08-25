@@ -132,6 +132,10 @@ type CustomAgentConfig struct {
 	// ===== Agent Mode Settings =====
 	// Maximum iterations for ReAct loop (only for agent type)
 	MaxIterations int `yaml:"max_iterations" json:"max_iterations"`
+	// Force tool_choice="required" on the first ReAct round: the model must call at
+	// least one tool before answering (falls back automatically if the provider
+	// rejects tool_choice). Guards grounded agents against answering from memory.
+	ForceToolFirstRound bool `yaml:"force_tool_first_round" json:"force_tool_first_round,omitempty"`
 	// Timeout for a single LLM call in seconds (0 = use global default)
 	LLMCallTimeout int `yaml:"llm_call_timeout" json:"llm_call_timeout,omitempty"`
 	// Allowed tools (only for agent type)
