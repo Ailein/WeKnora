@@ -21,13 +21,22 @@ Exposes one tool, togather_nearest_store. stderr is the log channel.
 """
 
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote
 
 from nearest import GeocodeError, build_summary, find_nearest
 
 SERVER_INFO = {"name": "togather-distance", "version": "1.0.0"}
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
+
+# Static assets served on GET /assets/<name> (e.g. membership-app QR codes the
+# WeKnora bot fetches and re-sends as WhatsApp images). Only files that exist
+# in ASSETS_DIR with a whitelisted extension are served; the basename() call
+# blocks path traversal.
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+ASSET_CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
 TOOL = {
     "name": "togather_nearest_store",
@@ -179,7 +188,17 @@ class StreamableHTTPHandler(BaseHTTPRequestHandler):
         self._send(200, json.dumps(response, ensure_ascii=False).encode("utf-8"))
 
     def do_GET(self):
-        # No server-initiated stream in stateless mode.
+        if self.path.startswith("/assets/"):
+            name = os.path.basename(unquote(self.path[len("/assets/"):]))
+            ctype = ASSET_CONTENT_TYPES.get(os.path.splitext(name)[1].lower())
+            file_path = os.path.join(ASSETS_DIR, name)
+            if not name or ctype is None or not os.path.isfile(file_path):
+                self._send(404, b"not found", "text/plain")
+                return
+            with open(file_path, "rb") as f:
+                self._send(200, f.read(), ctype)
+            return
+        # No server-initiated MCP stream in stateless mode.
         self._send(405)
 
     def do_DELETE(self):

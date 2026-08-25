@@ -163,5 +163,5 @@ WeKnora 和 openclaw 都是 WhatsApp Web 协议的 companion 设备，**同一�
 ## 已知未迁移项
 
 - **语音消息转写**：✅ 已接入。WeKnora 配好 type=ASR 的模型后重跑 `setup.py`，脚本会自动挑选并写入 agent 的 `audio_upload_enabled: true` + `asr_model_id`（两个字段都在 agent 上，IM 渠道没有单独开关）。WhatsApp 语音条进来会先转写再进 QA（`internal/im/voice.go`，16 MiB 上限、2 分钟超时）；目前只有 WhatsApp 渠道会触发转写。可用 `POST /api/v1/initialization/asr/check` 验证模型连通。
-- **会员 App QR 码图片**：两张 QR 图未迁，system prompt 已按"发下载链接"兜底。WeKnora 的 agent 自动回复**不支持携带图片附件**（`ReplyMessage.Attachments` 只有人工坐席手动回复会填，且仅 WhatsApp 支持媒体），也没有"渠道素材库"功能——如需 bot 主动发 QR 图，属于新功能开发；短期可由人工坐席在收件箱里手动发图（`workspace-togather-cs/assets/` 两张 PNG）。
+- **会员 App QR 码图片**：✅ 已接入。引擎新增 bot 出站图片能力（`internal/im/bot_media.go`）：媒体平台（WhatsApp）上，bot 最终回复里的 markdown 图片 `![alt](https://…)` 会被服务端下载（SSRF 白名单校验、仅 image/*、单张 16 MiB 上限、每条回复最多 3 张）并作为真实图片消息发出，对应 markdown 从文本中移除；下载失败则保留原文本兜底。两张 QR PNG 放在 `integrations/togather-distance/assets/`，由 togather-distance 容器的 `GET /assets/<name>` 静态路由提供（仅白名单扩展名 + basename 防穿越），system prompt 指示模型在被问 App 下载时原样输出这两个图片 markdown。前提：`.env` 的 `SSRF_WHITELIST` 已含 `togather-distance`。
 - CRM 收集（openclaw 的 nova-crm-collector）：WeKnora 侧未对接，用收件箱 + IM 分析看板替代。

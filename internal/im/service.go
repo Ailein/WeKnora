@@ -2100,9 +2100,12 @@ func (s *Service) executeQARequest(req *qaRequest) {
 		answer = "抱歉，处理您的问题时出现了异常，请稍后再试。"
 	}
 
+	outbound := formatIMOutboundAnswer(ctx, answer, req.tenant, s.defaultFileSvc, s.storageResolver)
+	outbound, mediaAttachments := extractBotImageAttachments(ctx, outbound, req.msg.Platform)
 	reply := &ReplyMessage{
-		Content: formatIMOutboundAnswer(ctx, answer, req.tenant, s.defaultFileSvc, s.storageResolver),
-		IsFinal: true,
+		Content:     outbound,
+		Attachments: mediaAttachments,
+		IsFinal:     true,
 	}
 	if sendErr := req.adapter.SendReply(ctx, req.msg, reply); sendErr != nil {
 		logger.Errorf(ctx, "[IM] Send reply failed: %v", sendErr)
@@ -2951,7 +2954,9 @@ func (s *Service) fallbackNonStream(ctx context.Context, channel *IMChannel, msg
 		answer = "抱歉，处理您的问题时出现了异常，请稍后再试。"
 	}
 
-	if sendErr := adapter.SendReply(ctx, msg, &ReplyMessage{Content: formatIMOutboundAnswer(ctx, answer, tenant, s.defaultFileSvc, s.storageResolver), IsFinal: true}); sendErr != nil {
+	outbound := formatIMOutboundAnswer(ctx, answer, tenant, s.defaultFileSvc, s.storageResolver)
+	outbound, mediaAttachments := extractBotImageAttachments(ctx, outbound, msg.Platform)
+	if sendErr := adapter.SendReply(ctx, msg, &ReplyMessage{Content: outbound, Attachments: mediaAttachments, IsFinal: true}); sendErr != nil {
 		return sendErr
 	}
 	s.noteBotAnswerOutcome(ctx, channel, session, msg, adapter, err != nil)
