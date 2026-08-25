@@ -309,6 +309,8 @@ interface BaseModelTestPayload {
     interfaceType?: string;
     /** 第二段密钥（如 LKEAP Rerank 的腾讯云 SecretKey） */
     appSecret?: string;
+    /** OAuth 型厂商（OpenAI Codex / ChatGPT 订阅）的刷新令牌，此时 apiKey 承载 access token */
+    refreshToken?: string;
 }
 
 // 检查远程API模型

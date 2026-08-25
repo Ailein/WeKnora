@@ -2520,7 +2520,21 @@ export default {
         openai: {
           label: 'OpenAI',
           description: 'gpt-5.2, gpt-5-mini 등'
+        },
+        codex: {
+          label: 'OpenAI Codex (ChatGPT 구독)',
+          description: 'ChatGPT Plus/Pro 구독 연결: gpt-5.6-sol / terra / luna 등'
         }
+      },
+      codex: {
+        accessTokenLabel: 'Access Token',
+        refreshTokenLabel: 'Refresh Token',
+        refreshTokenPlaceholder: 'refresh_token 입력 (access token 만료 시 자동 갱신)',
+        authJsonLabel: '~/.codex/auth.json에서 가져오기 (권장)',
+        authJsonPlaceholder: '~/.codex/auth.json 전체 내용을 붙여넣으면 Access Token과 Refresh Token이 자동 입력됩니다',
+        authJsonParsed: '자격 증명 해석 완료 — 아래 필드가 자동 입력되었습니다',
+        authJsonInvalid: '해석할 수 없습니다. 완전한 auth.json JSON 내용을 붙여넣어 주세요',
+        credentialHint: '로컬에서 `codex login`으로 ChatGPT에 로그인하면 자격 증명이 ~/.codex/auth.json에 저장됩니다. 가져온 후 시스템이 토큰을 자동으로 갱신·교체합니다.'
       },
       validation: {
         modelNameRequired: '모델 이름을 입력해주세요',

@@ -113,6 +113,9 @@ type ChatConfig struct {
 	CustomHeaders map[string]string
 	AppID         string
 	AppSecret     string // 加密值，由工厂函数调用方传入，在 NewWeKnoraCloudChat 中使用前已解密
+	// RefreshToken 是 OAuth 型厂商（OpenAI Codex / ChatGPT 订阅）的刷新令牌；
+	// 此时 APIKey 承载 access token。见 internal/models/codexauth。
+	RefreshToken string
 }
 
 // ConfigFromModel 根据 types.Model 构造 ChatConfig。
@@ -135,6 +138,7 @@ func ConfigFromModel(m *types.Model, appID, appSecret string) *ChatConfig {
 		CustomHeaders:  m.Parameters.CustomHeaders,
 		AppID:          appID,
 		AppSecret:      appSecret,
+		RefreshToken:   m.Parameters.RefreshToken,
 	}
 }
 
@@ -167,6 +171,9 @@ func NewRemoteChat(config *ChatConfig) (Chat, error) {
 	}
 	if providerName == provider.ProviderAnthropic {
 		return NewAnthropicChat(config)
+	}
+	if providerName == provider.ProviderCodex {
+		return NewCodexChat(config)
 	}
 	return NewRemoteAPIChat(config)
 }

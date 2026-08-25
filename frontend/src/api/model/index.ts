@@ -32,11 +32,14 @@ export interface ModelConfig {
     // 0 或不填表示沿用全局默认（model.max_concurrency）；仅对 chat/embedding/vllm 生效。
     max_concurrency?: number;
     app_id?: string;
-    // Secret fields (api_key, app_secret) are never returned by the server in
-    // this shape — they live behind the /credentials subresource. They are
-    // kept on the type so create-mode payloads can still carry them in the
-    // initial POST body.
+    // Secret fields (api_key, app_secret, refresh_token) are never returned
+    // by the server in this shape — they live behind the /credentials
+    // subresource. They are kept on the type so create-mode payloads can
+    // still carry them in the initial POST body.
     app_secret?: string;
+    // OAuth 型厂商（OpenAI Codex / ChatGPT 订阅）的刷新令牌；
+    // 此时 api_key 承载 access token。
+    refresh_token?: string;
   };
   is_default?: boolean;
   is_builtin?: boolean;
@@ -191,7 +194,7 @@ export async function debugModel(
 // shape and the design notes in internal/handler/dto/mcp.go.
 // ----------------------------------------------------------------------------
 
-export type ModelCredentialField = 'api_key' | 'app_secret'
+export type ModelCredentialField = 'api_key' | 'app_secret' | 'refresh_token'
 
 export interface ModelCredentialsResponse {
   fields: Record<ModelCredentialField, { configured: boolean }>

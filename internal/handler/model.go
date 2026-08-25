@@ -601,6 +601,7 @@ func (h *ModelHandler) UpdateModel(c *gin.Context) {
 	// clobber a stored credential. Log a warning to spot stale callers.
 	storedAPIKey := model.Parameters.APIKey
 	storedAppSecret := model.Parameters.AppSecret
+	storedRefreshToken := model.Parameters.RefreshToken
 	if req.Parameters.APIKey != "" && req.Parameters.APIKey != storedAPIKey {
 		logger.Warnf(ctx,
 			"deprecated: api_key in PUT /models/%s body is ignored; use PUT /credentials instead", id)
@@ -612,6 +613,7 @@ func (h *ModelHandler) UpdateModel(c *gin.Context) {
 	newParams := req.Parameters
 	newParams.APIKey = storedAPIKey
 	newParams.AppSecret = storedAppSecret
+	newParams.RefreshToken = storedRefreshToken
 	// Preserve backend-managed fields not sent by the frontend either.
 	newParams.ParameterSize = model.Parameters.ParameterSize
 	if newParams.InterfaceType == "" {

@@ -270,7 +270,7 @@ func (s *modelService) UpdateModel(ctx context.Context, model *types.Model) erro
 // the current Parameters), so no explicit cache invalidation is required —
 // the next call will pick up the new credential automatically.
 func (s *modelService) UpdateModelCredentials(
-	ctx context.Context, id string, apiKey, appSecret *string,
+	ctx context.Context, id string, apiKey, appSecret, refreshToken *string,
 ) (*types.Model, error) {
 	tenantID := types.MustTenantIDFromContext(ctx)
 	existing, err := s.repo.GetByID(ctx, tenantID, id)
@@ -292,6 +292,10 @@ func (s *modelService) UpdateModelCredentials(
 	}
 	if appSecret != nil && *appSecret != "" && *appSecret != existing.Parameters.AppSecret {
 		existing.Parameters.AppSecret = *appSecret
+		changed = true
+	}
+	if refreshToken != nil && *refreshToken != "" && *refreshToken != existing.Parameters.RefreshToken {
+		existing.Parameters.RefreshToken = *refreshToken
 		changed = true
 	}
 	if !changed {
@@ -333,6 +337,11 @@ func (s *modelService) ClearModelCredential(ctx context.Context, id, field strin
 	case "app_secret":
 		if existing.Parameters.AppSecret != "" {
 			existing.Parameters.AppSecret = ""
+			changed = true
+		}
+	case "refresh_token":
+		if existing.Parameters.RefreshToken != "" {
+			existing.Parameters.RefreshToken = ""
 			changed = true
 		}
 	default:

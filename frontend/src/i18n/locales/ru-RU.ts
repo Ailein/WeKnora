@@ -2520,7 +2520,21 @@ export default {
         openai: {
           label: 'OpenAI',
           description: 'gpt-5.2, gpt-5-mini, etc.'
+        },
+        codex: {
+          label: 'OpenAI Codex (подписка ChatGPT)',
+          description: 'Подписка ChatGPT Plus/Pro: gpt-5.6-sol / terra / luna и др.'
         }
+      },
+      codex: {
+        accessTokenLabel: 'Access Token',
+        refreshTokenLabel: 'Refresh Token',
+        refreshTokenPlaceholder: 'Введите refresh_token (автоматически обновляет access token после истечения срока)',
+        authJsonLabel: 'Импорт из ~/.codex/auth.json (рекомендуется)',
+        authJsonPlaceholder: 'Вставьте полное содержимое ~/.codex/auth.json — Access Token и Refresh Token заполнятся автоматически',
+        authJsonParsed: 'Учётные данные распознаны — поля ниже заполнены автоматически',
+        authJsonInvalid: 'Не удалось разобрать; вставьте полное JSON-содержимое auth.json',
+        credentialHint: 'Выполните `codex login` на своей машине, чтобы войти через ChatGPT; учётные данные сохраняются в ~/.codex/auth.json. После импорта система обновляет и ротирует токены автоматически.'
       },
       validation: {
         modelNameRequired: 'Введите название модели',

@@ -1635,6 +1635,9 @@ type ModelTestRequest struct {
 	ExtraConfig               map[string]string `json:"extraConfig,omitempty"`
 	// AppSecret 用于 LKEAP / Volcengine Rerank 等需要第二段密钥的场景（对应模型 Parameters.AppSecret）。
 	AppSecret string `json:"appSecret,omitempty"`
+	// RefreshToken 用于 OAuth 型厂商（OpenAI Codex / ChatGPT 订阅），
+	// 此时 apiKey 承载 access token（对应模型 Parameters.RefreshToken）。
+	RefreshToken string `json:"refreshToken,omitempty"`
 	// ModelID, when set, instructs the handler to substitute any missing
 	// secrets (APIKey, AppSecret via ExtraConfig) from the stored model
 	// record before assembling the test client. This lets the "Test
@@ -1657,7 +1660,7 @@ func (h *InitializationHandler) fillSecretsFromStoredModel(ctx context.Context, 
 	if req == nil || req.ModelID == "" {
 		return
 	}
-	if req.APIKey != "" && req.AppSecret != "" {
+	if req.APIKey != "" && req.AppSecret != "" && req.RefreshToken != "" {
 		return
 	}
 	stored, err := h.modelService.GetModelByID(ctx, req.ModelID)
@@ -1671,6 +1674,9 @@ func (h *InitializationHandler) fillSecretsFromStoredModel(ctx context.Context, 
 	}
 	if req.AppSecret == "" {
 		req.AppSecret = stored.Parameters.AppSecret
+	}
+	if req.RefreshToken == "" {
+		req.RefreshToken = stored.Parameters.RefreshToken
 	}
 }
 
@@ -1710,6 +1716,7 @@ func (h *InitializationHandler) buildTestModel(
 			BaseURL:       req.BaseURL,
 			APIKey:        req.APIKey,
 			AppSecret:     req.AppSecret,
+			RefreshToken:  req.RefreshToken,
 			Provider:      req.Provider,
 			InterfaceType: req.InterfaceType,
 			ExtraConfig:   req.ExtraConfig,
@@ -1764,6 +1771,10 @@ func (h *InitializationHandler) CheckRemoteModel(c *gin.Context) {
 	}
 	h.fillSecretsFromStoredModel(ctx, &req)
 
+	// Codex（ChatGPT 订阅）有固定默认端点，Base URL 允许留空。
+	if req.BaseURL == "" && provider.ProviderName(req.Provider) == provider.ProviderCodex {
+		req.BaseURL = provider.CodexBaseURL
+	}
 	if req.ModelName == "" || req.BaseURL == "" {
 		logger.Error(ctx, "Model name and base URL are required")
 		c.Error(errors.NewBadRequestError("模型名称和Base URL不能为空"))

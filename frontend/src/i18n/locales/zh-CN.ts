@@ -2422,6 +2422,16 @@ export default {
       goToOllamaSettings: '查看设置',
       providerLabel: '服务商',
       providerPlaceholder: '选择模型服务商',
+      codex: {
+        accessTokenLabel: 'Access Token',
+        refreshTokenLabel: 'Refresh Token',
+        refreshTokenPlaceholder: '输入 refresh_token（access token 过期后自动续期）',
+        authJsonLabel: '从 ~/.codex/auth.json 导入（推荐）',
+        authJsonPlaceholder: '粘贴 ~/.codex/auth.json 的完整内容，自动提取 Access Token 与 Refresh Token',
+        authJsonParsed: '凭证解析成功，已自动填入下方字段',
+        authJsonInvalid: '无法解析，请粘贴完整的 auth.json JSON 内容',
+        credentialHint: '在本机执行 `codex login` 登录 ChatGPT 后，凭证保存在 ~/.codex/auth.json；导入后系统会自动刷新并轮换令牌。'
+      },
       providers: {
         novita: {
           label: 'Novita AI',
@@ -2522,6 +2532,10 @@ export default {
         openai: {
           label: 'OpenAI',
           description: 'gpt-5.2, gpt-5-mini, etc.'
+        },
+        codex: {
+          label: 'OpenAI Codex (ChatGPT 订阅)',
+          description: 'ChatGPT Plus/Pro 订阅直连：gpt-5.6-sol / terra / luna 等'
         }
       },
       validation: {

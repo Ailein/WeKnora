@@ -90,8 +90,9 @@ func NewModelResponse(ctx context.Context, m *types.Model) *ModelResponse {
 	var creds map[string]CredentialFieldMetadata
 	if !m.IsBuiltin || canManageBuiltin {
 		creds = map[string]CredentialFieldMetadata{
-			"api_key":    {Configured: m.Parameters.APIKey != ""},
-			"app_secret": {Configured: m.Parameters.AppSecret != ""},
+			"api_key":       {Configured: m.Parameters.APIKey != ""},
+			"app_secret":    {Configured: m.Parameters.AppSecret != ""},
+			"refresh_token": {Configured: m.Parameters.RefreshToken != ""},
 		}
 	}
 	return &ModelResponse{

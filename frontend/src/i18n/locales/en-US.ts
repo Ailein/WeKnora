@@ -4069,10 +4069,24 @@ export default {
       },
       providerLabel: 'Provider',
       providerPlaceholder: 'Select model provider',
+      codex: {
+        accessTokenLabel: 'Access Token',
+        refreshTokenLabel: 'Refresh Token',
+        refreshTokenPlaceholder: 'Enter refresh_token (auto-renews the access token when it expires)',
+        authJsonLabel: 'Import from ~/.codex/auth.json (recommended)',
+        authJsonPlaceholder: 'Paste the full content of ~/.codex/auth.json to auto-fill the Access Token and Refresh Token',
+        authJsonParsed: 'Credentials parsed — fields below were filled automatically',
+        authJsonInvalid: 'Could not parse; paste the complete auth.json JSON content',
+        credentialHint: 'Run `codex login` on your machine to sign in with ChatGPT; credentials land in ~/.codex/auth.json. After import the system refreshes and rotates tokens automatically.'
+      },
       providers: {
         openai: {
           label: 'OpenAI',
           description: 'gpt-5.2, gpt-5-mini, etc.'
+        },
+        codex: {
+          label: 'OpenAI Codex (ChatGPT subscription)',
+          description: 'ChatGPT Plus/Pro subscription: gpt-5.6-sol / terra / luna, etc.'
         },
         anthropic: {
           label: 'Anthropic',

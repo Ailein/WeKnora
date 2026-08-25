@@ -28,7 +28,7 @@ type ModelService interface {
 	// model's Parameters. Nil pointer means "do not touch this field";
 	// empty string is treated as no-op (use ClearModelCredential to remove).
 	// Returns the updated model.
-	UpdateModelCredentials(ctx context.Context, id string, apiKey, appSecret *string) (*types.Model, error)
+	UpdateModelCredentials(ctx context.Context, id string, apiKey, appSecret, refreshToken *string) (*types.Model, error)
 	// ClearModelCredential removes a single credential field. field must be
 	// "api_key" or "app_secret". Clearing an already-empty field is a no-op.
 	ClearModelCredential(ctx context.Context, id, field string) error

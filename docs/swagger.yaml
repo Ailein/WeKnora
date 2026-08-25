@@ -240,6 +240,20 @@ definitions:
       model_id:
         type: string
     type: object
+  github_com_Tencent_WeKnora_internal_types.AdminCreateUserRequest:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+      username:
+        maxLength: 50
+        minLength: 2
+        type: string
+    required:
+    - email
+    - username
+    type: object
   github_com_Tencent_WeKnora_internal_types.AgentStep:
     properties:
       iteration:
@@ -294,6 +308,7 @@ definitions:
     - system.admin_promoted
     - system.admin_revoked
     - system.user_password_reset
+    - system.user_created
     - system.api_key_created
     - system.api_key_revoked
     - system.queue_task_retried
@@ -357,6 +372,7 @@ definitions:
     - AuditActionSystemAdminPromoted
     - AuditActionSystemAdminRevoked
     - AuditActionSystemUserPasswordReset
+    - AuditActionSystemUserCreated
     - AuditActionSystemAPIKeyCreated
     - AuditActionSystemAPIKeyRevoked
     - AuditActionSystemQueueTaskRetried
@@ -808,6 +824,12 @@ definitions:
         description: FAQ score boost multiplier - FAQ results score multiplied by
           this factor
         type: number
+      force_tool_first_round:
+        description: |-
+          Force tool_choice="required" on the first ReAct round: the model must call at
+          least one tool before answering (falls back automatically if the provider
+          rejects tool_choice). Guards grounded agents against answering from memory.
+        type: boolean
       history_turns:
         description: Number of history turns to keep in context
         type: integer
@@ -1074,7 +1096,54 @@ definitions:
     type: object
   github_com_Tencent_WeKnora_internal_types.DockerSandboxConfig:
     properties:
+      cpu_limit:
+        description: |-
+          CPULimit is the number of CPU cores one sandbox may use. 0 uses the
+          built-in default.
+        type: number
+      host:
+        description: |-
+          Host is the daemon endpoint in DOCKER_HOST form. Empty means the local
+          unix socket.
+        type: string
+      http_timeout_sec:
+        description: HTTPTimeoutSec bounds each Engine API call. 0 uses the built-in
+          default.
+        type: integer
+      idle_ttl_seconds:
+        description: |-
+          IdleTTLSeconds is how long a session container may go unused before it
+          is reclaimed. The daemon has no idle timeout of its own, so this is what
+          stops an abandoned session from pinning host memory indefinitely.
+        type: integer
       image:
+        type: string
+      memory_limit_mb:
+        description: MemoryLimitMB caps one sandbox's memory. 0 uses the built-in
+          default.
+        type: integer
+      network_mode:
+        description: |-
+          NetworkMode is the Docker network sandboxes join: "bridge" (default) or
+          "none" for no egress. Nothing else is accepted — host and container:
+          modes share another namespace outright, and a named network is usually
+          the deployment's own compose network, which would put the sandbox next
+          to Postgres and Redis.
+        type: string
+      pids_limit:
+        description: |-
+          PidsLimit caps how many processes one sandbox may run. 0 uses the
+          built-in default.
+        type: integer
+      runtime:
+        description: |-
+          Runtime selects an alternative OCI runtime such as "runsc" (gVisor).
+          Empty uses the daemon default.
+        type: string
+      tls_cert_path:
+        description: |-
+          TLSCertPath is a directory on the WeKnora host containing ca.pem,
+          cert.pem and key.pem. Required when Host is a TCP endpoint.
         type: string
     type: object
   github_com_Tencent_WeKnora_internal_types.E2BSandboxConfig:
@@ -2233,6 +2302,13 @@ definitions:
       updated_at:
         description: Last update timestamp
         type: string
+      usage:
+        allOf:
+        - $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.TokenUsage'
+        description: |-
+          LLM token usage aggregated across every round of the turn that produced this
+          assistant message. Persisted so history reads can attribute cost after the
+          live stream is gone; NULL (nil) for user messages and pre-feature rows.
       used_memories:
         description: |-
           UsedMemories records which long-term memories were injected into this
@@ -2371,6 +2447,13 @@ definitions:
         type: string
       provider:
         description: 'Provider identifier: openai, aliyun, zhipu, generic'
+        type: string
+      refresh_token:
+        description: |-
+          RefreshToken 是 OAuth 型厂商（目前仅 OpenAI Codex / ChatGPT 订阅）的
+          刷新令牌，AES-256 加密存储。对应的 access token 复用 APIKey 字段；
+          过期时间与账号 ID 不落库，运行时从 access token JWT 实时解析
+          （见 internal/models/codexauth）。
         type: string
       supports_vision:
         description: Whether the model accepts image/multimodal input
@@ -2719,6 +2802,18 @@ definitions:
           nil preserves the parser default; an explicit false disables the mode.
         type: boolean
     type: object
+  github_com_Tencent_WeKnora_internal_types.PromptCacheStatus:
+    enum:
+    - unsupported
+    - unreported
+    - miss
+    - hit
+    type: string
+    x-enum-varnames:
+    - PromptCacheStatusUnsupported
+    - PromptCacheStatusUnreported
+    - PromptCacheStatusMiss
+    - PromptCacheStatusHit
   github_com_Tencent_WeKnora_internal_types.QuestionGenerationConfig:
     properties:
       custom_instructions:
@@ -3334,6 +3429,32 @@ definitions:
     - organization_id
     - permission
     type: object
+  github_com_Tencent_WeKnora_internal_types.SkillImageConfig:
+    properties:
+      base_template_id:
+        description: |-
+          BaseTemplateID is the template this chain was originally built from;
+          the rebuild path starts over from it.
+        type: string
+      built_at:
+        description: BuiltAt records when this generation was produced.
+        type: string
+      generation:
+        description: |-
+          Generation increments on every successful install/remove, for naming
+          and troubleshooting.
+        type: integer
+      owner_fingerprint:
+        description: |-
+          OwnerFingerprint identifies the provider account that owns the snapshot.
+          Snapshots are invisible across accounts, so a mismatch means "fall back
+          to the base template" rather than "fail".
+        type: string
+      snapshot_id:
+        description: SnapshotID is the currently effective snapshot; empty = base
+          template.
+        type: string
+    type: object
   github_com_Tencent_WeKnora_internal_types.StarterSuggestionConfig:
     properties:
       count:
@@ -3720,6 +3841,14 @@ definitions:
           "e2b", "docker", or "local". "disabled" is reserved for the hidden
           workspace policy row.
         type: string
+      skill_image:
+        allOf:
+        - $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.SkillImageConfig'
+        description: |-
+          SkillImage points at the snapshot that carries this config's installed
+          skills. Empty means "use the base template". Written only by the skill
+          install/remove path: MergeSandboxConfigForUpdate ignores client values
+          so a settings-form save cannot wipe or plant the pointer.
       volume_mount:
         allOf:
         - $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.VolumeMountConfig'
@@ -3729,6 +3858,30 @@ definitions:
           skills, but the configuration itself is skill-agnostic and can serve
           any volume-mount use case (shared datasets, pre-installed toolchains,
           etc.).
+    type: object
+  github_com_Tencent_WeKnora_internal_types.TokenUsage:
+    properties:
+      cache_miss_tokens:
+        type: integer
+      cache_read_tokens:
+        type: integer
+      cache_reported:
+        type: boolean
+      cache_status:
+        $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.PromptCacheStatus'
+      cache_write_tokens:
+        type: integer
+      cached_tokens:
+        description: |-
+          CachedTokens is the legacy alias for CacheReadTokens. It remains on the
+          wire for compatibility with existing API consumers.
+        type: integer
+      completion_tokens:
+        type: integer
+      prompt_tokens:
+        type: integer
+      total_tokens:
+        type: integer
     type: object
   github_com_Tencent_WeKnora_internal_types.ToolCall:
     properties:
@@ -4772,6 +4925,16 @@ definitions:
     - engine_type
     - name
     type: object
+  internal_handler.CreateSystemUserResponse:
+    properties:
+      generated_password:
+        description: |-
+          GeneratedPassword is the plaintext password when the server
+          auto-generated one. Absent when the caller supplied the password.
+        type: string
+      user:
+        $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.UserInfo'
+    type: object
   internal_handler.DeleteTagRequest:
     properties:
       exclude_ids:
@@ -5148,6 +5311,11 @@ definitions:
         type: string
       provider:
         type: string
+      refreshToken:
+        description: |-
+          RefreshToken 用于 OAuth 型厂商（OpenAI Codex / ChatGPT 订阅），
+          此时 apiKey 承载 access token（对应模型 Parameters.RefreshToken）。
+        type: string
       source:
         description: 为空时按需默认为 "remote"
         type: string
@@ -5339,6 +5507,11 @@ definitions:
       modelName:
         type: string
       provider:
+        type: string
+      refreshToken:
+        description: |-
+          RefreshToken 用于 OAuth 型厂商（OpenAI Codex / ChatGPT 订阅），
+          此时 apiKey 承载 access token（对应模型 Parameters.RefreshToken）。
         type: string
       source:
         description: 为空时按需默认为 "remote"
@@ -10899,12 +11072,15 @@ paths:
         in: query
         name: keyword
         type: string
-      - description: Offset for pagination
+      - description: Offset for pagination (minimum 0)
         in: query
+        minimum: 0
         name: offset
         type: integer
-      - description: Limit for pagination (default 20)
+      - description: Limit for pagination (default 20, maximum 100)
         in: query
+        maximum: 100
+        minimum: 1
         name: limit
         type: integer
       - description: Comma-separated file extensions to filter (e.g., csv,xlsx)
@@ -15150,6 +15326,58 @@ paths:
             additionalProperties: true
             type: object
       summary: Apply the default storage quota to every existing workspace
+      tags:
+      - System Admin
+  /system/admin/users/create:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Provision a new local user account (SystemAdmin only).
+        When `password` is omitted or null, a cryptographically random
+        password is generated (OIDC-style crypto/rand + base64url)
+        and returned once in the response body. Any provided value,
+        including empty string, is policy-checked. Tenant provisioning
+        follows the shared auth.default_tenant_mode policy.
+      parameters:
+      - description: User creation request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.AdminCreateUserRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Identity already exists, returns the existing user
+          schema:
+            $ref: '#/definitions/internal_handler.CreateSystemUserResponse'
+        "201":
+          description: User created successfully
+          schema:
+            $ref: '#/definitions/internal_handler.CreateSystemUserResponse'
+        "400":
+          description: Invalid request or weak password
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: 'Forbidden: not a system admin'
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Email and username refer to conflicting identities
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create a new user (SystemAdmin)
       tags:
       - System Admin
   /system/admin/users/reset-password:

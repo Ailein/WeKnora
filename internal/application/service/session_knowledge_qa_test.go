@@ -101,7 +101,7 @@ func (s *stubModelService) DeleteModel(context.Context, string) error {
 }
 
 func (s *stubModelService) UpdateModelCredentials(
-	context.Context, string, *string, *string,
+	context.Context, string, *string, *string, *string,
 ) (*types.Model, error) {
 	return nil, nil
 }

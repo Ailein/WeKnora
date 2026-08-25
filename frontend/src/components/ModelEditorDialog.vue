@@ -233,10 +233,22 @@
             <t-input v-model="formData.baseUrl" :placeholder="getBaseUrlPlaceholder()" />
           </div>
 
+          <!-- Codex（ChatGPT 订阅）：粘贴 auth.json 自动提取凭证（创建模式） -->
+          <div v-if="isCodex && !isEdit" class="form-item">
+            <label class="form-label">{{ $t('model.editor.codex.authJsonLabel') }}</label>
+            <t-textarea v-model="codexAuthJson" :placeholder="$t('model.editor.codex.authJsonPlaceholder')"
+              :autosize="{ minRows: 3, maxRows: 6 }" spellcheck="false" @input="parseCodexAuthJson" />
+            <p v-if="codexAuthParseState === 'ok'" class="form-desc codex-auth-ok">
+              <t-icon name="check-circle-filled" /> {{ $t('model.editor.codex.authJsonParsed') }}
+            </p>
+            <p v-else-if="codexAuthParseState === 'error'" class="form-desc codex-auth-error">
+              <t-icon name="error-circle-filled" /> {{ $t('model.editor.codex.authJsonInvalid') }}
+            </p>
+            <p v-else class="form-desc">{{ $t('model.editor.codex.credentialHint') }}</p>
+          </div>
+
           <div v-if="formData.provider !== 'weknoracloud'" class="form-item">
-            <label class="form-label">{{
-              isSignedRerank ? signedRerankAccessKeyLabel : $t('model.editor.apiKeyOptional')
-            }}</label>
+            <label class="form-label">{{ apiKeyLabel }}</label>
             <!--
               Edit mode: credentials live behind the /credentials subresource
               of the model — managed by the shared CredentialResource card,
@@ -264,6 +276,15 @@
               </template>
             </t-input>
             <p v-if="isSignedRerank" class="form-desc">{{ signedRerankCredentialHint }}</p>
+          </div>
+
+          <!-- Codex（ChatGPT 订阅）：Refresh Token（创建模式；编辑模式由 CredentialResource 管理） -->
+          <div v-if="isCodex && !isEdit" class="form-item">
+            <label class="form-label">{{ $t('model.editor.codex.refreshTokenLabel') }}</label>
+            <t-input v-model="formData.refreshToken" type="password"
+              :placeholder="$t('model.editor.codex.refreshTokenPlaceholder')" autocomplete="off" spellcheck="false">
+              <template #prefix-icon><t-icon name="lock-on" /></template>
+            </t-input>
           </div>
 
           <!-- AK/SK Rerank 创建模式：SecretKey（编辑模式由 CredentialResource 管理） -->
@@ -447,6 +468,8 @@ interface ModelFormData {
   appSecret?: string
   /** LKEAP Rerank：地域，如 ap-guangzhou */
   lkeapRegion?: string
+  /** OAuth 型厂商（OpenAI Codex / ChatGPT 订阅）：刷新令牌，创建时写入 refresh_token */
+  refreshToken?: string
 }
 
 type EditorModelType = 'chat' | 'embedding' | 'rerank' | 'vllm' | 'asr'
@@ -504,6 +527,16 @@ const fallbackProviderOptions = computed(() => [
     },
     description: t('model.editor.providers.openai.description'),
     modelTypes: ['chat', 'embedding', 'vllm', 'asr']
+  },
+  {
+    value: 'codex',
+    label: t('model.editor.providers.codex.label'),
+    defaultUrls: {
+      chat: 'https://chatgpt.com/backend-api/codex',
+      vllm: 'https://chatgpt.com/backend-api/codex'
+    },
+    description: t('model.editor.providers.codex.description'),
+    modelTypes: ['chat', 'vllm']
   },
   {
     value: 'azure_openai',
@@ -723,6 +756,34 @@ const modelTypeIcon = computed(() => {
   return map[activeModelType.value] || 'setting'
 })
 
+const isCodex = computed(() => formData.value.provider === 'codex')
+
+// Codex（ChatGPT 订阅）：粘贴 ~/.codex/auth.json 自动提取 access/refresh token
+const codexAuthJson = ref('')
+const codexAuthParseState = ref<'idle' | 'ok' | 'error'>('idle')
+
+const parseCodexAuthJson = () => {
+  const raw = codexAuthJson.value.trim()
+  if (!raw) {
+    codexAuthParseState.value = 'idle'
+    return
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    const access = parsed?.tokens?.access_token ?? parsed?.access_token
+    const refresh = parsed?.tokens?.refresh_token ?? parsed?.refresh_token
+    if (!access && !refresh) {
+      codexAuthParseState.value = 'error'
+      return
+    }
+    if (access) formData.value.apiKey = String(access)
+    if (refresh) formData.value.refreshToken = String(refresh)
+    codexAuthParseState.value = 'ok'
+  } catch {
+    codexAuthParseState.value = 'error'
+  }
+}
+
 const isLkeapRerank = computed(
   () => activeModelType.value === 'rerank' && formData.value.provider === 'lkeap',
 )
@@ -758,20 +819,25 @@ const signedRerankCredentialHint = computed(() => (
     : t('model.editor.lkeap.rerankCredentialHint')
 ))
 
+// Create-mode label for the API key input; Codex repurposes the field as the
+// OAuth access token.
+const apiKeyLabel = computed(() => {
+  if (isCodex.value) return t('model.editor.codex.accessTokenLabel')
+  if (isSignedRerank.value) return signedRerankAccessKeyLabel.value as string
+  return t('model.editor.apiKeyOptional')
+})
+
 // Credential resource binding for the shared <CredentialResource> component.
 const credentialFields = computed<CredentialFieldDef<ModelCredentialField>[]>(() => {
   const fields: CredentialFieldDef<ModelCredentialField>[] = [
-    {
-      key: 'api_key',
-      label: (isSignedRerank.value
-        ? signedRerankAccessKeyLabel.value
-        : t('model.editor.apiKeyOptional')) as string,
-    },
+    { key: 'api_key', label: apiKeyLabel.value as string },
   ]
   if (formData.value.provider === 'weknoracloud') {
     fields.push({ key: 'app_secret', label: 'App Secret' })
   } else if (isSignedRerank.value) {
     fields.push({ key: 'app_secret', label: signedRerankSecretKeyLabel.value as string })
+  } else if (isCodex.value) {
+    fields.push({ key: 'refresh_token', label: t('model.editor.codex.refreshTokenLabel') as string })
   }
   return fields
 })
@@ -795,6 +861,7 @@ const credentialApi = computed<CredentialResourceApi<ModelCredentialField>>(() =
 const credentialMeta = computed(() => (props.modelData as any)?.credentials ?? {
   api_key: { configured: false },
   app_secret: { configured: false },
+  refresh_token: { configured: false },
 })
 
 // Placeholder hint for the create-mode API key input. Edit mode replaces
@@ -879,6 +946,7 @@ const formData = ref<ModelFormData>({
   customHeaders: [],
   appSecret: '',
   lkeapRegion: 'ap-guangzhou',
+  refreshToken: '',
 })
 
 const rules = computed(() => ({
@@ -1063,10 +1131,13 @@ watch(() => props.visible, (val) => {
         formData.value = {
           ...props.modelData,
           apiKey: '',
+          refreshToken: '',
           customHeaders: Array.isArray(props.modelData.customHeaders)
             ? props.modelData.customHeaders.map(h => ({ key: h.key, value: h.value }))
             : [],
         }
+        codexAuthJson.value = ''
+        codexAuthParseState.value = 'idle'
         applyThinkingControlFromModelData()
       } else if (lastOpenedModelId.value !== null || !formData.value.id) {
         // 上次是编辑某个模型，或第一次新增 → 重置成空白
@@ -1120,7 +1191,10 @@ const resetForm = () => {
     customHeaders: [],
     appSecret: '',
     lkeapRegion: 'ap-guangzhou',
+    refreshToken: '',
   }
+  codexAuthJson.value = ''
+  codexAuthParseState.value = 'idle'
   modelChecked.value = false
   modelAvailable.value = false
   remoteChecked.value = false
@@ -1382,6 +1456,7 @@ const checkRemoteAPI = async () => {
           baseUrl: formData.value.baseUrl || '',
           apiKey: formData.value.apiKey || '',
           provider: formData.value.provider,
+          ...(formData.value.refreshToken ? { refreshToken: formData.value.refreshToken } : {}),
           ...idPayload,
           ...headerPayload,
         })
@@ -1442,6 +1517,7 @@ const checkRemoteAPI = async () => {
           baseUrl: formData.value.baseUrl || '',
           apiKey: formData.value.apiKey || '',
           provider: formData.value.provider,
+          ...(formData.value.refreshToken ? { refreshToken: formData.value.refreshToken } : {}),
           ...idPayload,
           ...headerPayload,
         })
@@ -2196,6 +2272,15 @@ const handleCancel = () => {
       color: var(--td-error-color);
     }
   }
+}
+
+// Codex auth.json 解析状态提示
+.codex-auth-ok {
+  color: var(--td-success-color) !important;
+}
+
+.codex-auth-error {
+  color: var(--td-error-color) !important;
 }
 
 .form-desc {

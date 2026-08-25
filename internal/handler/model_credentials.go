@@ -29,6 +29,9 @@ func NewModelCredentialsHandler(svc interfaces.ModelService) *ModelCredentialsHa
 type modelCredentialsPutRequest struct {
 	APIKey    *string `json:"api_key,omitempty"`
 	AppSecret *string `json:"app_secret,omitempty"`
+	// RefreshToken 是 OAuth 型厂商（OpenAI Codex / ChatGPT 订阅）的刷新令牌；
+	// 与 api_key（此时承载 access token）配对更新。
+	RefreshToken *string `json:"refresh_token,omitempty"`
 }
 
 func (h *ModelCredentialsHandler) Put(c *gin.Context) {
@@ -45,7 +48,7 @@ func (h *ModelCredentialsHandler) Put(c *gin.Context) {
 		c.Error(errors.NewBadRequestError(err.Error()))
 		return
 	}
-	if req.APIKey == nil && req.AppSecret == nil {
+	if req.APIKey == nil && req.AppSecret == nil && req.RefreshToken == nil {
 		m, err := h.svc.GetModelByID(ctx, id)
 		if err != nil || m == nil {
 			c.Error(errors.NewNotFoundError("Model not found"))
@@ -53,14 +56,15 @@ func (h *ModelCredentialsHandler) Put(c *gin.Context) {
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": dto.CredentialsResponse{
 			Fields: map[string]dto.CredentialFieldMetadata{
-				"api_key":    {Configured: m.Parameters.APIKey != ""},
-				"app_secret": {Configured: m.Parameters.AppSecret != ""},
+				"api_key":       {Configured: m.Parameters.APIKey != ""},
+				"app_secret":    {Configured: m.Parameters.AppSecret != ""},
+				"refresh_token": {Configured: m.Parameters.RefreshToken != ""},
 			},
 		}})
 		return
 	}
 
-	updated, err := h.svc.UpdateModelCredentials(ctx, id, req.APIKey, req.AppSecret)
+	updated, err := h.svc.UpdateModelCredentials(ctx, id, req.APIKey, req.AppSecret, req.RefreshToken)
 	if err != nil {
 		if err == service.ErrModelNotFound {
 			c.Error(errors.NewNotFoundError("Model not found"))
@@ -77,8 +81,9 @@ func (h *ModelCredentialsHandler) Put(c *gin.Context) {
 
 	resp := dto.CredentialsResponse{
 		Fields: map[string]dto.CredentialFieldMetadata{
-			"api_key":    {Configured: updated.Parameters.APIKey != ""},
-			"app_secret": {Configured: updated.Parameters.AppSecret != ""},
+			"api_key":       {Configured: updated.Parameters.APIKey != ""},
+			"app_secret":    {Configured: updated.Parameters.AppSecret != ""},
+			"refresh_token": {Configured: updated.Parameters.RefreshToken != ""},
 		},
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp})
@@ -93,7 +98,7 @@ func (h *ModelCredentialsHandler) DeleteField(c *gin.Context) {
 		c.Error(errors.NewBadRequestError("Workspace ID cannot be empty"))
 		return
 	}
-	if field != "api_key" && field != "app_secret" {
+	if field != "api_key" && field != "app_secret" && field != "refresh_token" {
 		c.Error(errors.NewBadRequestError("unknown credential field: " + secutils.SanitizeForLog(field)))
 		return
 	}

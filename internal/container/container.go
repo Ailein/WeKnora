@@ -82,6 +82,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/mcp"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/models/codexauth"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
 	"github.com/Tencent/WeKnora/internal/models/limiter"
 	"github.com/Tencent/WeKnora/internal/models/utils/ollama"
@@ -431,6 +432,11 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	// (which is not encoded in the local:// URL).
 	must(container.Invoke(registerChatLocalImageResolver))
 
+	// Wire the Codex (ChatGPT subscription) token persister so rotated OAuth
+	// token pairs survive process restarts. The refresh token is single-use:
+	// losing a rotation would force the user to re-import ~/.codex/auth.json.
+	must(container.Invoke(registerCodexTokenPersister))
+
 	// Router configuration
 	logger.Debugf(ctx, "[Container] Registering router and starting task server...")
 	must(container.Provide(router.NewRouter))
@@ -447,6 +453,27 @@ func BuildContainer(container *dig.Container) *dig.Container {
 
 	logger.Infof(ctx, "[Container] Container initialization completed successfully")
 	return container
+}
+
+// registerCodexTokenPersister writes rotated Codex OAuth token pairs straight
+// back to the model row. It deliberately bypasses the tenant-scoped repository:
+// a refresh can fire from any calling context (background ingestion included),
+// and the update touches exactly one owned column set on a row addressed by
+// primary key. Read-modify-write keeps the other Parameters fields intact;
+// concurrent admin edits racing a refresh are tolerable (next call refreshes
+// again).
+func registerCodexTokenPersister(db *gorm.DB) {
+	codexauth.SetPersister(func(ctx context.Context, modelID, accessToken, refreshToken string) error {
+		var m types.Model
+		if err := db.WithContext(ctx).Where("id = ?", modelID).First(&m).Error; err != nil {
+			return err
+		}
+		m.Parameters.APIKey = accessToken
+		m.Parameters.RefreshToken = refreshToken
+		return db.WithContext(ctx).Model(&types.Model{}).
+			Where("id = ?", modelID).
+			Update("parameters", m.Parameters).Error
+	})
 }
 
 // registerChatLocalImageResolver wires the chat package's LocalImageResolver

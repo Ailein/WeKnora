@@ -66,7 +66,7 @@ func TestUpdateBuiltinModelCredentials_SystemAdminOnly(t *testing.T) {
 	t.Run("tenant admin denied", func(t *testing.T) {
 		stored := &types.Model{ID: "builtin-chat", TenantID: 10000, IsBuiltin: true}
 		svc := NewModelService(&stubModelRepoForDelete{model: stored}, nil, nil, nil, nil, nil)
-		_, err := svc.UpdateModelCredentials(builtinModelContext(false), stored.ID, &newKey, nil)
+		_, err := svc.UpdateModelCredentials(builtinModelContext(false), stored.ID, &newKey, nil, nil)
 		require.Error(t, err)
 		appErr, ok := apperrors.IsAppError(err)
 		require.True(t, ok)
@@ -89,7 +89,7 @@ func TestUpdateBuiltinModelCredentials_SystemAdminOnly(t *testing.T) {
 		}, nil, nil, nil, nil, nil)
 
 		updated, err := svc.UpdateModelCredentials(
-			builtinModelContext(true), stored.ID, &newKey, nil,
+			builtinModelContext(true), stored.ID, &newKey, nil, nil,
 		)
 		require.NoError(t, err)
 		assert.Equal(t, newKey, updated.Parameters.APIKey)

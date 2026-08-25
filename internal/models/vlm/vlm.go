@@ -37,6 +37,9 @@ type Config struct {
 	CustomHeaders map[string]string
 	AppID         string
 	AppSecret     string
+	// RefreshToken 是 OAuth 型厂商（OpenAI Codex / ChatGPT 订阅）的刷新令牌；
+	// 此时 APIKey 承载 access token。
+	RefreshToken string
 }
 
 // ConfigFromModel 根据 types.Model 构造 vlm.Config。
@@ -68,6 +71,7 @@ func ConfigFromModel(m *types.Model, appID, appSecret string) *Config {
 		CustomHeaders:  m.Parameters.CustomHeaders,
 		AppID:          appID,
 		AppSecret:      appSecret,
+		RefreshToken:   m.Parameters.RefreshToken,
 	}
 }
 
@@ -110,6 +114,9 @@ func newVLM(config *Config, ollamaService *ollama.OllamaService) (VLM, error) {
 	}
 	if providerName == provider.ProviderWeKnoraCloud {
 		return NewWeKnoraCloudVLM(config)
+	}
+	if providerName == provider.ProviderCodex {
+		return NewCodexVLM(config)
 	}
 
 	return NewRemoteAPIVLM(config)

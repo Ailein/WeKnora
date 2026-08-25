@@ -85,6 +85,11 @@ type ModelParameters struct {
 	// WeKnoraCloud 厂商专用凭证
 	AppID     string `yaml:"app_id,omitempty"     json:"app_id,omitempty"`
 	AppSecret string `yaml:"app_secret,omitempty" json:"app_secret,omitempty"` // AES-256 加密存储，实际承载上游 API Key
+	// RefreshToken 是 OAuth 型厂商（目前仅 OpenAI Codex / ChatGPT 订阅）的
+	// 刷新令牌，AES-256 加密存储。对应的 access token 复用 APIKey 字段；
+	// 过期时间与账号 ID 不落库，运行时从 access token JWT 实时解析
+	// （见 internal/models/codexauth）。
+	RefreshToken string `yaml:"refresh_token,omitempty" json:"refresh_token,omitempty"`
 }
 
 // Per-response redaction for Model now lives in dto.NewModelResponse. The
@@ -165,6 +170,11 @@ func (c ModelParameters) Value() (driver.Value, error) {
 				c.AppSecret = encrypted
 			}
 		}
+		if c.RefreshToken != "" {
+			if encrypted, err := utils.EncryptAESGCM(c.RefreshToken, key); err == nil {
+				c.RefreshToken = encrypted
+			}
+		}
 	}
 	return json.Marshal(c)
 }
@@ -196,6 +206,12 @@ func (c *ModelParameters) Scan(value interface{}) error {
 	} else {
 		log.Printf("[crypto] model parameters app_secret: decrypt failed (SYSTEM_AES_KEY missing/rotated?), treating as unconfigured")
 		c.AppSecret = ""
+	}
+	if plain, ok := utils.DecryptStoredSecretLenient(c.RefreshToken); ok {
+		c.RefreshToken = plain
+	} else {
+		log.Printf("[crypto] model parameters refresh_token: decrypt failed (SYSTEM_AES_KEY missing/rotated?), treating as unconfigured")
+		c.RefreshToken = ""
 	}
 	return nil
 }

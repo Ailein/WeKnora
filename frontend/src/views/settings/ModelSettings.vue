@@ -201,6 +201,7 @@ function convertToLegacyFormat(model: ModelConfig) {
     modelName: model.name,
     baseUrl: model.parameters.base_url || '',
     apiKey: '',
+    refreshToken: '',
     provider: model.parameters.provider || '',
     dimension: model.parameters.embedding_parameters?.dimension,
     supportsDimensionOverride: model.parameters.embedding_parameters?.supports_dimension_override || false,
@@ -430,6 +431,11 @@ const handleModelSave = async (modelData: any) => {
     const trimmedAppSecret = (modelData.appSecret ?? '').trim()
     const appSecretFields: { app_secret?: string } =
       !editingModel.value && trimmedAppSecret ? { app_secret: trimmedAppSecret } : {}
+    // OAuth 型厂商（Codex）：refresh_token 同样只在创建时随 parameters 提交，
+    // 编辑态凭证走 /credentials 子资源。
+    const trimmedRefreshToken = (modelData.refreshToken ?? '').trim()
+    const refreshTokenFields: { refresh_token?: string } =
+      !editingModel.value && trimmedRefreshToken ? { refresh_token: trimmedRefreshToken } : {}
     const extraConfig: Record<string, string> = {}
     if (modelData.provider === 'lkeap' && saveType === 'rerank') {
       extraConfig.region = (modelData.lkeapRegion || 'ap-guangzhou').trim()
@@ -455,6 +461,7 @@ const handleModelSave = async (modelData: any) => {
         base_url: modelData.baseUrl?.trim() || '',
         ...apiKeyFields,
         ...appSecretFields,
+        ...refreshTokenFields,
         provider: modelData.provider || '',
         ...extraConfigFields,
         ...(Object.keys(customHeadersMap).length > 0 ? { custom_headers: customHeadersMap } : {}),
