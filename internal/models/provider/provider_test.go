@@ -317,3 +317,24 @@ func TestListByModelType(t *testing.T) {
 		assert.True(t, found, "Gemini should support embedding via the native Gemini API")
 	})
 }
+
+func TestCodexKnownModels(t *testing.T) {
+	p, ok := Get(ProviderCodex)
+	if !ok {
+		t.Fatal("codex provider not registered")
+	}
+	info := p.Info()
+	for _, mt := range []types.ModelType{types.ModelTypeKnowledgeQA, types.ModelTypeVLLM} {
+		models := info.KnownModels[mt]
+		if len(models) == 0 {
+			t.Fatalf("codex KnownModels[%s] is empty", mt)
+		}
+		if models[0] != "gpt-5.6-sol" {
+			t.Fatalf("codex KnownModels[%s][0] = %q, want default gpt-5.6-sol", mt, models[0])
+		}
+	}
+	// 未声明的类型不应有残留列表
+	if got := info.KnownModels[types.ModelTypeEmbedding]; len(got) != 0 {
+		t.Fatalf("codex KnownModels[embedding] should be empty, got %v", got)
+	}
+}

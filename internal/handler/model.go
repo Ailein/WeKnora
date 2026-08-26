@@ -703,6 +703,8 @@ type ModelProviderDTO struct {
 	Description string            `json:"description"` // 描述
 	DefaultURLs map[string]string `json:"defaultUrls"` // 按模型类型区分的默认 URL
 	ModelTypes  []string          `json:"modelTypes"`  // 支持的模型类型
+	// KnownModels 按模型类型列出可选模型名（仅封闭集合的厂商有值，如 Codex 订阅通道）
+	KnownModels map[string][]string `json:"knownModels,omitempty"`
 }
 
 // modelTypeToFrontend 将后端 ModelType 转换为前端兼容的字符串
@@ -786,12 +788,21 @@ func (h *ModelHandler) ListModelProviders(c *gin.Context) {
 			modelTypes = append(modelTypes, modelTypeToFrontend(mt))
 		}
 
+		var knownModels map[string][]string
+		if len(p.KnownModels) > 0 {
+			knownModels = make(map[string][]string, len(p.KnownModels))
+			for mt, models := range p.KnownModels {
+				knownModels[modelTypeToFrontend(mt)] = models
+			}
+		}
+
 		result = append(result, ModelProviderDTO{
 			Value:       string(p.Name),
 			Label:       p.DisplayName,
 			Description: p.Description,
 			DefaultURLs: defaultURLs,
 			ModelTypes:  modelTypes,
+			KnownModels: knownModels,
 		})
 	}
 

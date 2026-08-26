@@ -215,10 +215,15 @@
             </div>
           </template>
 
-          <!-- 模型名称 -->
+          <!-- 模型名称：厂商声明了封闭模型集合（如 Codex 订阅通道）时渲染
+               可选可输的下拉（creatable 兜底新模型名），否则保持自由输入 -->
           <div class="form-item">
             <label class="form-label required">{{ $t('model.modelName') }}</label>
-            <t-input v-model="formData.modelName" :placeholder="getModelNamePlaceholder()"
+            <t-select v-if="knownModelOptions.length" v-model="formData.modelName" filterable creatable clearable
+              :placeholder="$t('model.editor.modelNamePlaceholder.select')">
+              <t-option v-for="name in knownModelOptions" :key="name" :value="name" :label="name" />
+            </t-select>
+            <t-input v-else v-model="formData.modelName" :placeholder="getModelNamePlaceholder()"
               :disabled="formData.provider === 'weknoracloud' && wkcCredentialState !== 'configured'" />
           </div>
 
@@ -553,7 +558,7 @@ const apiProviderOptions = ref<ModelProviderOption[]>([])
 const loadingProviders = ref(false)
 
 // 硬编码的后备 Provider 配置 (当 API 不可用时使用)
-const fallbackProviderOptions = computed(() => [
+const fallbackProviderOptions = computed<ModelProviderOption[]>(() => [
   {
     value: 'openai',
     label: t('model.editor.providers.openai.label'),
@@ -573,6 +578,10 @@ const fallbackProviderOptions = computed(() => [
     defaultUrls: {
       chat: 'https://chatgpt.com/backend-api/codex',
       vllm: 'https://chatgpt.com/backend-api/codex'
+    },
+    knownModels: {
+      chat: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'],
+      vllm: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5']
     },
     description: t('model.editor.providers.codex.description'),
     modelTypes: ['chat', 'vllm']
@@ -797,6 +806,12 @@ const modelTypeIcon = computed(() => {
 
 const isCodex = computed(() => formData.value.provider === 'codex')
 
+// 当前厂商在当前模型类型下声明的封闭模型集合（有则模型名称渲染为下拉）
+const knownModelOptions = computed<string[]>(() => {
+  const provider = providerOptions.value.find(opt => opt.value === formData.value.provider)
+  return provider?.knownModels?.[activeModelType.value] ?? []
+})
+
 // Codex（ChatGPT 订阅）：粘贴 ~/.codex/auth.json 自动提取 access/refresh token
 const codexAuthJson = ref('')
 const codexAuthParseState = ref<'idle' | 'ok' | 'error'>('idle')
@@ -890,6 +905,11 @@ const applyCodexOAuthResult = async (res: CodexOAuthResult) => {
       formData.value.refreshToken = res.refresh_token || ''
       codexAuthJson.value = ''
       codexAuthParseState.value = 'idle'
+      // 授权完成后模型名还空着（比如用户清掉了自动填的）就补上默认值，
+      // 让「授权 → 直接点添加」一步到位。
+      if (!formData.value.modelName?.trim() && knownModelOptions.value.length) {
+        formData.value.modelName = knownModelOptions.value[0]
+      }
     }
     codexOAuthDone.value = { email: res.email, plan: res.plan }
     codexOAuthError.value = ''
@@ -1402,6 +1422,20 @@ const handleProviderChange = (value: string) => {
     }
     if (value === 'volcengine' && activeModelType.value === 'rerank' && !formData.value.modelName?.trim()) {
       formData.value.modelName = 'doubao-seed-rerank'
+    }
+    // 声明了封闭模型集合的厂商（如 Codex）：自动填第一个；若原值来自
+    // 别家的集合（即上次自动填/下拉选的，未被用户手改成自定义名），
+    // 跟随切换替换或清空，避免把别家的模型名带过来。
+    if (!isEdit.value) {
+      const newKnown = provider?.knownModels?.[activeModelType.value] ?? []
+      const current = formData.value.modelName?.trim() || ''
+      const fromOtherKnownList = !!current && providerOptions.value.some(opt =>
+        opt.value !== value && (opt.knownModels?.[activeModelType.value] ?? []).includes(current))
+      if (newKnown.length && (!current || fromOtherKnownList)) {
+        formData.value.modelName = newKnown[0]
+      } else if (!newKnown.length && fromOtherKnownList) {
+        formData.value.modelName = ''
+      }
     }
     // 重置校验状态
     remoteChecked.value = false

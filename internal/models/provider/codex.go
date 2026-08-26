@@ -11,6 +11,15 @@ import (
 // the frontend as the default Base URL.
 const CodexBaseURL = "https://chatgpt.com/backend-api/codex"
 
+// codexKnownModels 是订阅通道当前可用的模型（封闭集合，随 OpenAI 发布更新）。
+// 第一个是前端自动填充的默认值。
+var codexKnownModels = []string{
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-5.5",
+}
+
 // CodexProvider 通过 ChatGPT 订阅（Codex OAuth 凭证）调用 GPT-5.x 系列模型。
 // 认证不是 API Key，而是会轮换的 OAuth token 对（access + refresh），协议是
 // OpenAI Responses API 而非 Chat Completions，因此 chat 层有独立实现
@@ -30,6 +39,10 @@ func (p *CodexProvider) Info() ProviderInfo {
 		DefaultURLs: map[types.ModelType]string{
 			types.ModelTypeKnowledgeQA: CodexBaseURL,
 			types.ModelTypeVLLM:        CodexBaseURL,
+		},
+		KnownModels: map[types.ModelType][]string{
+			types.ModelTypeKnowledgeQA: codexKnownModels,
+			types.ModelTypeVLLM:        codexKnownModels,
 		},
 		// 该通道只有一个 responses 端点：对话与视觉可用，
 		// embedding/rerank/ASR 上游不存在。

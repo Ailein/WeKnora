@@ -3973,7 +3973,8 @@ export default {
         remote: 'e.g. gpt-4, claude-3-opus',
         localVllm: 'e.g. llava:latest',
         remoteVllm: 'e.g. gpt-4-vision-preview',
-        remoteAsr: 'e.g. whisper-1'
+        remoteAsr: 'e.g. whisper-1',
+        select: 'Pick a model, or type a custom name'
       },
       baseUrlLabel: 'Base URL',
       displayNameLabel: 'Display name (optional)',

@@ -2599,7 +2599,8 @@ export default {
         remote: 'например: gpt-4, claude-3-opus',
         localVllm: 'например: llava:latest',
         remoteVllm: 'например: gpt-4-vision-preview',
-        remoteAsr: 'например: whisper-1'
+        remoteAsr: 'например: whisper-1',
+        select: 'Выберите модель или введите своё название'
       },
       description: {
         chat: 'Настройте языковую модель для диалогов',

@@ -2601,7 +2601,8 @@ export default {
         remote: '例如：gpt-4, claude-3-opus',
         localVllm: '例如：llava:latest',
         remoteVllm: '例如：gpt-4-vision-preview',
-        remoteAsr: '例如：whisper-1'
+        remoteAsr: '例如：whisper-1',
+        select: '选择模型，或输入自定义名称'
       },
       description: {
         chat: '配置用于对话的大语言模型',

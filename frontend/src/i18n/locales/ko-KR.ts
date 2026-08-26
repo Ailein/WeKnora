@@ -2599,7 +2599,8 @@ export default {
         remote: '예: gpt-4, claude-3-opus',
         localVllm: '예: llava:latest',
         remoteVllm: '예: gpt-4-vision-preview',
-        remoteAsr: '예: whisper-1'
+        remoteAsr: '예: whisper-1',
+        select: '모델을 선택하거나 직접 입력하세요'
       },
       description: {
         chat: '대화용 대규모 언어 모델 설정',
