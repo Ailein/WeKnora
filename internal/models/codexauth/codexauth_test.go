@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -259,5 +261,101 @@ func TestApplyHeaders(t *testing.T) {
 		if got := h.Get(key); got != want {
 			t.Errorf("header %s = %q, want %q", key, got, want)
 		}
+	}
+}
+
+// withFastRetries shrinks the retry backoff for tests.
+func withFastRetries(t *testing.T) {
+	t.Helper()
+	old := tokenRetryDelays
+	tokenRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { tokenRetryDelays = old })
+}
+
+// hijackClose kills the connection before any response bytes, so the client
+// sees the same transport-level EOF the Cloudflare edge produces.
+func hijackClose(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		t.Fatal("test server does not support hijacking")
+	}
+	conn, _, err := hj.Hijack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+}
+
+func TestPostTokenFormRetriesTransportErrors(t *testing.T) {
+	withFastRetries(t)
+	newAccess := makeJWT(t, "acc-retry", time.Now().Add(time.Hour))
+	var mu sync.Mutex
+	attempts := 0
+	withTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n < 3 {
+			hijackClose(t, w)
+			return
+		}
+		fmt.Fprintf(w, `{"access_token":%q,"refresh_token":"rt-new","expires_in":3600}`, newAccess)
+	})
+
+	res, err := Refresh(context.Background(), "rt-old")
+	if err != nil {
+		t.Fatalf("Refresh should survive two transport failures: %v", err)
+	}
+	if res.RefreshToken != "rt-new" {
+		t.Errorf("RefreshToken = %q, want rt-new", res.RefreshToken)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestPostTokenFormNoRetryOnHTTPError(t *testing.T) {
+	withFastRetries(t)
+	var mu sync.Mutex
+	attempts := 0
+	withTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"invalid_grant"}`)
+	})
+
+	_, err := Refresh(context.Background(), "rt-dead")
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("err = %v, want ErrReauthRequired", err)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (HTTP errors must not be retried)", attempts)
+	}
+}
+
+func TestPostTokenFormExhaustsRetries(t *testing.T) {
+	withFastRetries(t)
+	var mu sync.Mutex
+	attempts := 0
+	withTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		hijackClose(t, w)
+	})
+
+	_, err := ExchangeCode(context.Background(), "code-x", "verifier-y")
+	if err == nil {
+		t.Fatal("expected error after all attempts fail")
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+	if !strings.Contains(err.Error(), "已重试 3 次") {
+		t.Errorf("error should mention retry count, got: %v", err)
 	}
 }

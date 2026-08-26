@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -95,21 +94,13 @@ func ExchangeCode(ctx context.Context, code, verifier string) (*ExchangeResult, 
 		"code_verifier": {verifier},
 		"redirect_uri":  {RedirectURI},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("create exchange request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := refreshHTTPClient.Do(req)
+	statusCode, body, err := postTokenForm(ctx, form)
 	if err != nil {
 		return nil, fmt.Errorf("exchange Codex authorization code: %w", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
+	if statusCode != http.StatusOK {
 		return nil, fmt.Errorf("exchange Codex authorization code: HTTP %d: %s",
-			resp.StatusCode, truncate(string(body), 300))
+			statusCode, truncate(string(body), 300))
 	}
 
 	var parsed struct {

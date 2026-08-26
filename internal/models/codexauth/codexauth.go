@@ -62,6 +62,44 @@ var refreshHTTPClient = &http.Client{Timeout: 30 * time.Second}
 // tokenEndpoint is TokenURL, overridable in tests.
 var tokenEndpoint = TokenURL
 
+// tokenRetryDelays are the waits before the 2nd/3rd attempt of a token POST.
+// Overridable in tests.
+var tokenRetryDelays = []time.Duration{200 * time.Millisecond, 600 * time.Millisecond}
+
+// postTokenForm posts an OAuth grant to tokenEndpoint and returns the HTTP
+// status plus body. Transport-level failures (dial/TLS/EOF/reset) are retried:
+// behind proxy chains the Cloudflare edge intermittently kills connections
+// before responding, and since no response means the server never processed
+// the grant, the one-shot code/refresh token has not been consumed. If the
+// server *did* process a lost response, the retry surfaces a clear
+// invalid_grant instead of a bare connection error.
+func postTokenForm(ctx context.Context, form url.Values) (status int, body []byte, err error) {
+	encoded := form.Encode()
+	for attempt := 0; ; attempt++ {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(encoded))
+		if reqErr != nil {
+			return 0, nil, fmt.Errorf("create token request: %w", reqErr)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, doErr := refreshHTTPClient.Do(req)
+		if doErr == nil {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			return resp.StatusCode, b, nil
+		}
+		if attempt >= len(tokenRetryDelays) || ctx.Err() != nil {
+			return 0, nil, fmt.Errorf("连接 OpenAI 授权服务器失败（已重试 %d 次，多为网络/代理链路抖动，可稍后再试）: %w",
+				attempt+1, doErr)
+		}
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		case <-time.After(tokenRetryDelays[attempt]):
+		}
+	}
+}
+
 // Claims is the subset of the access-token JWT payload we need.
 type Claims struct {
 	AccountID string
@@ -138,26 +176,18 @@ func Refresh(ctx context.Context, refreshToken string) (*RefreshResult, error) {
 		"refresh_token": {refreshToken},
 		"client_id":     {ClientID},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("create refresh request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := refreshHTTPClient.Do(req)
+	statusCode, body, err := postTokenForm(ctx, form)
 	if err != nil {
 		return nil, fmt.Errorf("refresh Codex token: %w", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-	if resp.StatusCode != http.StatusOK {
+	if statusCode != http.StatusOK {
 		lower := strings.ToLower(string(body))
-		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized ||
+		if statusCode == http.StatusBadRequest || statusCode == http.StatusUnauthorized ||
 			strings.Contains(lower, "invalid_grant") || strings.Contains(lower, "refresh_token_reused") {
-			return nil, fmt.Errorf("%w (HTTP %d: %s)", ErrReauthRequired, resp.StatusCode, truncate(string(body), 300))
+			return nil, fmt.Errorf("%w (HTTP %d: %s)", ErrReauthRequired, statusCode, truncate(string(body), 300))
 		}
-		return nil, fmt.Errorf("refresh Codex token: HTTP %d: %s", resp.StatusCode, truncate(string(body), 300))
+		return nil, fmt.Errorf("refresh Codex token: HTTP %d: %s", statusCode, truncate(string(body), 300))
 	}
 
 	var parsed struct {
