@@ -22,6 +22,8 @@ func RegisterModelRoutes(
 	{
 		// 获取模型厂商列表 — Viewer+
 		models.GET("/providers", g.Viewer(), handler.ListModelProviders)
+		// Codex 实时模型目录 — 会解密已存凭证并发起上游调用，Admin+
+		models.POST("/codex/available-models", g.Admin(), handler.ListCodexAvailableModels)
 		// 创建模型 — Admin+
 		models.POST("", g.Admin(), handler.CreateModel)
 		// 获取模型列表 — Viewer+

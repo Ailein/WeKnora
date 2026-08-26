@@ -253,6 +253,29 @@ export async function exchangeCodexOAuth(state: string, input: string): Promise<
   return (response.data ?? response) as CodexOAuthResult
 }
 
+export interface CodexAvailableModel {
+  name: string
+  display_name?: string
+  description?: string
+  vision: boolean
+}
+
+export interface CodexAvailableModelsResult {
+  models: CodexAvailableModel[]
+  /** upstream = 实时目录；static = 上游不可达时的内置兜底 */
+  source: 'upstream' | 'static'
+  error?: string
+}
+
+// 拉取 Codex（ChatGPT 订阅）实时可用模型：编辑模式传 model_id（用已存凭证），
+// 创建模式传刚授权拿到的 access_token
+export async function listCodexAvailableModels(
+  payload: { model_id?: string; access_token?: string },
+): Promise<CodexAvailableModelsResult> {
+  const response: any = await post('/api/v1/models/codex/available-models', payload)
+  return (response.data ?? response) as CodexAvailableModelsResult
+}
+
 export interface InitializeWeKnoraCloudRequest {
   app_id: string
   app_secret: string

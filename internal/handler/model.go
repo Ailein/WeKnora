@@ -13,6 +13,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/handler/dto"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/models/codexauth"
 	"github.com/Tencent/WeKnora/internal/models/provider"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
@@ -811,4 +812,111 @@ func (h *ModelHandler) ListModelProviders(c *gin.Context) {
 		"success": true,
 		"data":    result,
 	})
+}
+
+// listCodexModelsRequest identifies whose credential to query the live Codex
+// model catalog with: an existing model's stored credential (edit mode) or a
+// freshly obtained access token that is still only in the create form.
+type listCodexModelsRequest struct {
+	ModelID     string `json:"model_id"`
+	AccessToken string `json:"access_token"`
+}
+
+// codexModelDTO 是返回给前端的一个可选模型。
+type codexModelDTO struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Vision      bool   `json:"vision"`
+}
+
+// ListCodexAvailableModels godoc
+// @Summary      获取 Codex (ChatGPT 订阅) 实时可用模型列表
+// @Description  用已存模型的凭证（model_id）或刚授权拿到的 access_token 调 ChatGPT 后端的模型目录；上游不可达时回退到内置静态列表（source=static）
+// @Tags         模型管理
+// @Accept       json
+// @Produce      json
+// @Param        request  body  map[string]interface{}  true  "{model_id?: string, access_token?: string}"
+// @Success      200  {object}  map[string]interface{}  "{models: [{name, display_name, vision}], source: upstream|static}"
+// @Security     Bearer
+// @Router       /models/codex/available-models [post]
+func (h *ModelHandler) ListCodexAvailableModels(c *gin.Context) {
+	ctx := c.Request.Context()
+	var req listCodexModelsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(errors.NewBadRequestError(err.Error()))
+		return
+	}
+
+	var accessToken, accountID string
+	switch {
+	case req.ModelID != "":
+		model, err := h.service.GetModelByID(ctx, req.ModelID)
+		if err != nil {
+			c.Error(errors.NewNotFoundError("Model not found"))
+			return
+		}
+		if provider.ProviderName(model.Parameters.Provider) != provider.ProviderCodex {
+			c.Error(errors.NewBadRequestError("model is not a Codex (ChatGPT subscription) model"))
+			return
+		}
+		// TokenSource transparently refreshes an expired access token and
+		// persists the rotated pair — same path the chat client uses.
+		src := codexauth.GetTokenSource(model.ID, model.Parameters.APIKey, model.Parameters.RefreshToken)
+		accessToken, accountID, err = src.Token(ctx)
+		if err != nil {
+			logger.Warnf(ctx, "[CodexModels] credential unusable for model %s: %v", req.ModelID, err)
+			respondCodexStaticModels(c, err.Error())
+			return
+		}
+	case req.AccessToken != "":
+		// Create mode right after OAuth: the token was just issued, use it
+		// as-is (no refresh — the rotating refresh token stays untouched in
+		// the form until the model is saved).
+		claims, err := codexauth.ParseAccessToken(req.AccessToken)
+		if err != nil {
+			c.Error(errors.NewBadRequestError("invalid access token: " + err.Error()))
+			return
+		}
+		accessToken, accountID = req.AccessToken, claims.AccountID
+	default:
+		c.Error(errors.NewValidationError("either model_id or access_token is required"))
+		return
+	}
+
+	upstream, err := codexauth.ListModels(ctx, codexauth.DefaultBaseURL, accessToken, accountID)
+	if err != nil {
+		logger.Warnf(ctx, "[CodexModels] upstream catalog fetch failed, serving static list: %v", err)
+		respondCodexStaticModels(c, err.Error())
+		return
+	}
+	models := make([]codexModelDTO, 0, len(upstream))
+	for _, m := range upstream {
+		models = append(models, codexModelDTO{
+			Name:        m.Slug,
+			DisplayName: m.DisplayName,
+			Description: m.Description,
+			Vision:      m.Vision,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"models": models,
+		"source": "upstream",
+	}})
+}
+
+// respondCodexStaticModels serves the provider-declared static list when the
+// live catalog is unreachable, so the picker never comes back empty.
+func respondCodexStaticModels(c *gin.Context, reason string) {
+	var models []codexModelDTO
+	if p, ok := provider.Get(provider.ProviderCodex); ok {
+		for _, name := range p.Info().KnownModels[types.ModelTypeKnowledgeQA] {
+			models = append(models, codexModelDTO{Name: name})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"models": models,
+		"source": "static",
+		"error":  reason,
+	}})
 }

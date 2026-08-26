@@ -466,6 +466,7 @@ import {
   startCodexOAuth,
   getCodexOAuthStatus,
   exchangeCodexOAuth,
+  listCodexAvailableModels,
   type ModelCredentialField,
   type CodexOAuthResult,
 } from '@/api/model'
@@ -806,8 +807,35 @@ const modelTypeIcon = computed(() => {
 
 const isCodex = computed(() => formData.value.provider === 'codex')
 
+// Codex：从 ChatGPT 后端实时拉到的模型目录（null = 未拉过/失败）。
+// 有它就盖过 provider 声明的静态列表，新模型上线无需发版。
+const codexLiveModels = ref<string[] | null>(null)
+let codexLiveModelsKey = ''
+
+const fetchCodexLiveModels = async () => {
+  if (!isCodex.value) return
+  // 编辑模式用已存凭证；创建模式要等 OAuth/粘贴令牌后才有 access token
+  const payload = isEdit.value && props.modelData?.id
+    ? { model_id: props.modelData.id }
+    : (formData.value.apiKey ? { access_token: formData.value.apiKey } : null)
+  if (!payload) return
+  const key = JSON.stringify(payload)
+  if (codexLiveModelsKey === key) return
+  codexLiveModelsKey = key
+  try {
+    const res = await listCodexAvailableModels(payload)
+    if (res.source === 'upstream' && res.models?.length) {
+      codexLiveModels.value = res.models.map(m => m.name)
+    }
+  } catch (e) {
+    codexLiveModelsKey = '' // 失败可重试（比如下次授权完成后）
+    console.warn('Failed to fetch live Codex models, keeping static list', e)
+  }
+}
+
 // 当前厂商在当前模型类型下声明的封闭模型集合（有则模型名称渲染为下拉）
 const knownModelOptions = computed<string[]>(() => {
+  if (isCodex.value && codexLiveModels.value?.length) return codexLiveModels.value
   const provider = providerOptions.value.find(opt => opt.value === formData.value.provider)
   return provider?.knownModels?.[activeModelType.value] ?? []
 })
@@ -833,6 +861,7 @@ const parseCodexAuthJson = () => {
     if (access) formData.value.apiKey = String(access)
     if (refresh) formData.value.refreshToken = String(refresh)
     codexAuthParseState.value = 'ok'
+    fetchCodexLiveModels()
   } catch {
     codexAuthParseState.value = 'error'
   }
@@ -913,6 +942,9 @@ const applyCodexOAuthResult = async (res: CodexOAuthResult) => {
     }
     codexOAuthDone.value = { email: res.email, plan: res.plan }
     codexOAuthError.value = ''
+    // 凭证到手/刚轮换：强制重拉实时模型目录
+    codexLiveModelsKey = ''
+    fetchCodexLiveModels()
   } else if (res.status === 'error') {
     codexOAuthError.value = res.error || t('model.editor.codex.oauthFailed')
   } else {
@@ -1140,6 +1172,7 @@ const formData = ref<ModelFormData>({
 //（进而读 formData），放前面会触发 TDZ ReferenceError。
 watch(isCodex, (val) => {
   if (!val) resetCodexOAuth()
+  else fetchCodexLiveModels()
 })
 
 onUnmounted(() => {

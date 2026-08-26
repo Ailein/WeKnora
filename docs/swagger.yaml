@@ -13127,6 +13127,32 @@ paths:
       summary: 更新模型
       tags:
       - 模型管理
+  /models/codex/available-models:
+    post:
+      consumes:
+      - application/json
+      description: 用已存模型的凭证（model_id）或刚授权拿到的 access_token 调 ChatGPT 后端的模型目录；上游不可达时回退到内置静态列表（source=static）
+      parameters:
+      - description: '{model_id?: string, access_token?: string}'
+        in: body
+        name: request
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{models: [{name, display_name, vision}], source: upstream|static}'
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: 获取 Codex (ChatGPT 订阅) 实时可用模型列表
+      tags:
+      - 模型管理
   /models/providers:
     get:
       consumes:
