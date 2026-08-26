@@ -51,7 +51,7 @@ func TestShellExecRejectsWorkDirOutsideWorkspace(t *testing.T) {
 
 	require.NoError(t, err)
 	require.False(t, result.Success)
-	require.Contains(t, result.Error, "outside the sandbox workspace")
+	require.Contains(t, result.Error, `work_dir "/etc" is outside the allowed sandbox roots /workspace`)
 	assert.Equal(t, time.Duration(0), executor.timeout)
 }
 
@@ -66,6 +66,31 @@ func TestShellExecTimeoutHonorsAndCapsRequestedValue(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	assert.Equal(t, shellExecMaxTimeout, executor.timeout)
+}
+
+type fakeInstallShellExecutor struct {
+	timeout time.Duration
+}
+
+func (f *fakeInstallShellExecutor) ExecShellCommandWithOptions(
+	_ context.Context, _ string, _ string, opts sandbox.ShellExecOptions,
+) (*sandbox.ExecuteResult, error) {
+	f.timeout = opts.Timeout
+	return &sandbox.ExecuteResult{ExitCode: 0}, nil
+}
+
+func TestInstallShellExecDefaultsToTheTenMinuteBudget(t *testing.T) {
+	inner := &fakeInstallShellExecutor{}
+	tool := NewInstallShellExecTool(inner)
+
+	result, err := tool.Execute(shellExecTestContext(), json.RawMessage(
+		`{"command":"pip install -r requirements.txt"}`,
+	))
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, shellExecMaxTimeout, inner.timeout,
+		"install-mode shell_exec must not keep the ordinary 120s default")
 }
 
 func TestShellExecConfigurableOutputAndRegistryOverride(t *testing.T) {
@@ -86,6 +111,7 @@ func TestShellExecConfigurableOutputAndRegistryOverride(t *testing.T) {
 	assert.Contains(t, result.Output, content)
 	assert.NotContains(t, result.Output, "output truncated")
 	assert.Equal(t, 32768, result.Data["max_output_bytes"])
+	assert.Equal(t, "shell_exec", result.Data["display_type"])
 }
 
 func TestShellExecOutputLimitIsHardCapped(t *testing.T) {

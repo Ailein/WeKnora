@@ -19,7 +19,7 @@ var versionedSQLiteTables = []string{
 	"system_settings",
 	"knowledge_processing_spans",
 	"knowledge_tag_relations",
-	"im_quick_replies", // 000089
+	"im_quick_replies", // 000091
 }
 
 // versionedSQLiteColumns maps each existing table to the columns that the
@@ -32,12 +32,12 @@ var versionedSQLiteColumns = map[string][]string{
 	"tenant_invitations": {"token", "accepted_count"},        // 000054
 	"embed_channels":     {"allow_memory"},                   // 000060
 	"mcp_oauth_tokens":   {"principal_type", "principal_id"}, // 000064
-	"im_channels":        {"handoff_config"},                 // 000088
+	"im_channels":        {"handoff_config"},                 // 000090
 	"im_channel_sessions": {
-		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // 000087
-		"consecutive_failures", "handoff_notified_at", // 000088
-		"peer_name", "operator_unread_count", // 000089
-		"last_message_preview", "last_message_role", "last_message_at", // 000089
+		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // 000089
+		"consecutive_failures", "handoff_notified_at", // 000090
+		"peer_name", "operator_unread_count", // 000091
+		"last_message_preview", "last_message_role", "last_message_at", // 000091
 	},
 }
 

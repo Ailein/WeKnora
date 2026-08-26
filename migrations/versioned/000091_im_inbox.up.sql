@@ -4,7 +4,7 @@
 -- im_channel_sessions so the inbox list is a single-table query, captures the
 -- peer's IM display name, and adds the per-tenant quick-reply store used by
 -- the inbox composer.
-DO $$ BEGIN RAISE NOTICE '[Migration 000089] Adding IM operator inbox columns'; END $$;
+DO $$ BEGIN RAISE NOTICE '[Migration 000091] Adding IM operator inbox columns'; END $$;
 
 ALTER TABLE im_channel_sessions
     ADD COLUMN IF NOT EXISTS peer_name VARCHAR(255) NOT NULL DEFAULT '',
@@ -24,4 +24,4 @@ CREATE TABLE IF NOT EXISTS im_quick_replies (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-DO $$ BEGIN RAISE NOTICE '[Migration 000089] IM operator inbox columns added'; END $$;
+DO $$ BEGIN RAISE NOTICE '[Migration 000091] IM operator inbox columns added'; END $$;

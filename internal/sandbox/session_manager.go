@@ -18,11 +18,6 @@
 //   - An Execute call with an empty SessionID falls through to a stateless
 //     RemoteSandbox, which allocates a fresh sandbox, runs the script, and
 //     tears the sandbox down after Execute returns.
-//   - When the remote provider's Health probe fails at construction time and
-//     config.FallbackEnabled is true, the manager falls back to LocalSandbox.
-//     Every session-scoped capability (shell exec, file staging, session
-//     filesystem inspection) then refuses to run on the host: those calls
-//     require a real remote provider.
 //   - Cube and E2B reap idle sandboxes themselves. Docker has no provider TTL,
 //     so that backend runs its own idle sweep against activity-marker mtimes.
 package sandbox
@@ -69,9 +64,9 @@ const sessionLifecycleCleanupTimeout = 30 * time.Second
 
 // SessionBoundManager is a sandbox.Manager that binds one remote sandbox per
 // tenant session. Concrete provider work is delegated to RemoteSandboxClient;
-// this type owns validation, fallback, and the mapping between application
-// concepts (ExecuteConfig, session-scoped shell/file APIs) and the provider-
-// neutral RemoteSandboxClient contract.
+// this type owns validation and the mapping between application concepts
+// (ExecuteConfig, session-scoped shell/file APIs) and the provider-neutral
+// RemoteSandboxClient contract.
 type SessionBoundManager struct {
 	config    *Config
 	validator *ScriptValidator
@@ -82,13 +77,7 @@ type SessionBoundManager struct {
 	lifecycle *remoteSessionLifecycle
 	ephemeral *RemoteSandbox
 
-	// fallback is used when the remote provider's health probe fails at
-	// construction time. Nil when the remote provider is healthy.
-	fallback Sandbox
-
-	// activeType is the effective sandbox type callers observe. It equals
-	// client.Provider() in the normal path and the fallback sandbox's Type()
-	// after Local fallback engages.
+	// activeType is the effective sandbox type callers observe.
 	activeType SandboxType
 
 	// mu guards Cleanup's idempotency flag.
@@ -110,9 +99,9 @@ type SessionBoundManagerConfig struct {
 	// touching another that shares the same provider account.
 	ConfigID string
 
-	// SkipHealthProbe skips the construction-time Health() round-trip and,
-	// with it, the Local fallback. Set by the per-tenant resolver, which
-	// builds a manager per request. See NewSessionBoundManager.
+	// SkipHealthProbe skips the construction-time Health() round-trip.
+	// Set by the per-tenant resolver, which builds a manager per request.
+	// See NewSessionBoundManager.
 	SkipHealthProbe bool
 }
 
@@ -124,10 +113,6 @@ type SessionBoundManagerConfig struct {
 // Provider identity comes from deps.Client.Provider() — not Config.Type —
 // so test harnesses and custom wiring that inject a different client backend
 // always project the correct template, TTL, and health timeout.
-//
-// When the client's Health probe fails and config.FallbackEnabled is true,
-// the manager transparently falls back to LocalSandbox for ephemeral Execute
-// calls. Session-scoped capabilities remain refused in that mode.
 func NewSessionBoundManager(deps SessionBoundManagerConfig) (*SessionBoundManager, error) {
 	cfg := deps.Config
 	if cfg == nil {
@@ -204,10 +189,9 @@ func NewSessionBoundManager(deps SessionBoundManagerConfig) (*SessionBoundManage
 	}
 
 	// Per-tenant managers are rebuilt on every request, so probing here would
-	// add a remote round-trip to each one. Skipping also disables the Local
-	// fallback below, which is deliberate: when a tenant explicitly configures
-	// a backend, silently running their scripts in a local process is a
-	// surprising, security-relevant downgrade. Failing loudly is correct.
+	// add a remote round-trip to each one. When a tenant explicitly configures
+	// a backend, an unreachable provider must fail at first use rather than
+	// substituting a different execution environment.
 	if deps.SkipHealthProbe {
 		return m, nil
 	}
@@ -219,19 +203,12 @@ func NewSessionBoundManager(deps SessionBoundManagerConfig) (*SessionBoundManage
 	)
 	defer cancel()
 	if err := deps.Client.Health(probeCtx); err != nil {
-		if !cfg.FallbackEnabled {
-			return nil, fmt.Errorf("remote sandbox provider unavailable: %w", err)
-		}
-		log.Printf("[sandbox] remote provider %s unhealthy (%v); falling back to local sandbox",
-			provider, err)
-		m.fallback = NewLocalSandbox(cfg)
-		m.activeType = m.fallback.Type()
+		return nil, fmt.Errorf("remote sandbox provider unavailable: %w", err)
 	}
 	return m, nil
 }
 
-// GetType reports the current effective sandbox type. Returns the fallback
-// type after Local fallback engages.
+// GetType reports the current effective sandbox type.
 func (m *SessionBoundManager) GetType() SandboxType {
 	if m == nil {
 		return SandboxTypeDisabled
@@ -242,17 +219,14 @@ func (m *SessionBoundManager) GetType() SandboxType {
 }
 
 // GetSandbox exposes a diagnostic Sandbox for callers that need to inspect
-// availability. Returns the fallback when engaged, otherwise a stateless
-// RemoteSandbox surface for the current provider.
+// availability. Returns a stateless RemoteSandbox surface for the current
+// provider.
 func (m *SessionBoundManager) GetSandbox() Sandbox {
 	if m == nil {
 		return nil
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if m.fallback != nil {
-		return m.fallback
-	}
 	return m.ephemeral
 }
 
@@ -269,7 +243,6 @@ func (m *SessionBoundManager) Execute(ctx context.Context, cfg *ExecuteConfig) (
 		m.mu.RUnlock()
 		return nil, ErrSandboxDisabled
 	}
-	fallback := m.fallback
 	m.mu.RUnlock()
 
 	if !cfg.SkipValidation {
@@ -283,15 +256,6 @@ func (m *SessionBoundManager) Execute(ctx context.Context, cfg *ExecuteConfig) (
 		}
 	}
 
-	if fallback != nil {
-		if strings.TrimSpace(cfg.SessionID) != "" {
-			return nil, fmt.Errorf(
-				"sandbox: session-scoped execution requires the remote provider (current mode: %s)",
-				m.fallback.Type(),
-			)
-		}
-		return fallback.Execute(ctx, cfg)
-	}
 	if strings.TrimSpace(cfg.SessionID) == "" {
 		return m.ephemeral.Execute(ctx, cfg)
 	}
@@ -389,6 +353,72 @@ func (m *SessionBoundManager) DestroySession(ctx context.Context, sessionID stri
 	return m.lifecycle.Destroy(ctx, key)
 }
 
+// InvalidateConfigSandboxes marks every session sandbox this config owns stale,
+// so each session rebuilds its sandbox from the config's current image on its
+// next use, and reports how many bindings were marked.
+//
+// It is the image-maintenance counterpart to DestroySession: nothing is torn
+// down here, so marking cannot delete a sandbox that is executing right now.
+// The replacement happens at the session's next resolve, which may be the next
+// operation of a turn already in flight; see resolveLocked for that limitation.
+func (m *SessionBoundManager) InvalidateConfigSandboxes(
+	ctx context.Context, tenantID uint64, configID string,
+) (int, error) {
+	if err := m.requireRemoteBackend(); err != nil {
+		return 0, err
+	}
+	return m.bindings.InvalidateByConfig(ctx, tenantID, configID)
+}
+
+// CreateSnapshot forwards provider snapshot creation for the live sandbox bound
+// to sessionID. Session execution never uses this optional capability; it is
+// reserved for skill image maintenance.
+func (m *SessionBoundManager) CreateSnapshot(
+	ctx context.Context, sessionID string, name string,
+) (RemoteSnapshotRef, error) {
+	if err := m.requireRemoteBackend(); err != nil {
+		return RemoteSnapshotRef{}, err
+	}
+	snapshots, ok := SnapshotManagerFrom(m.client)
+	if !ok || !m.client.Capabilities().SupportsSnapshots {
+		return RemoteSnapshotRef{}, errors.New("sandbox: remote provider does not support snapshots")
+	}
+	handle, err := m.resolveSession(ctx, sessionID)
+	if err != nil {
+		return RemoteSnapshotRef{}, err
+	}
+	return snapshots.CreateSnapshot(ctx, handle.ID(), name)
+}
+
+// DeleteSnapshot forwards provider snapshot deletion. The skill install path
+// uses it to abandon an orphan when the pointer switch fails; the reaper uses
+// it to prune superseded snapshots that have aged past retention.
+func (m *SessionBoundManager) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	if err := m.requireRemoteBackend(); err != nil {
+		return err
+	}
+	snapshots, ok := SnapshotManagerFrom(m.client)
+	if !ok || !m.client.Capabilities().SupportsSnapshots {
+		return errors.New("sandbox: remote provider does not support snapshots")
+	}
+	return snapshots.DeleteSnapshot(ctx, snapshotID)
+}
+
+// ListSnapshots forwards provider snapshot listing for audit and later cleanup
+// tasks.
+func (m *SessionBoundManager) ListSnapshots(
+	ctx context.Context, sandboxID string,
+) ([]RemoteSnapshotRef, error) {
+	if err := m.requireRemoteBackend(); err != nil {
+		return nil, err
+	}
+	snapshots, ok := SnapshotManagerFrom(m.client)
+	if !ok || !m.client.Capabilities().SupportsSnapshots {
+		return nil, errors.New("sandbox: remote provider does not support snapshots")
+	}
+	return snapshots.ListSnapshots(ctx, sandboxID)
+}
+
 // EnsureSessionDir creates dir inside the session's live sandbox when one is
 // bound. It is a no-op when the session has no live binding; the skill
 // framework will materialise the directory during the next Execute call.
@@ -400,7 +430,7 @@ func (m *SessionBoundManager) EnsureSessionDir(ctx context.Context, sessionID, d
 	if err != nil || !ok {
 		return err
 	}
-	if err := m.client.MakeDir(ctx, handle, dir); err != nil {
+	if err := ignoreExistingDir(m.client.MakeDir(ctx, handle, dir)); err != nil {
 		return fmt.Errorf("sandbox: ensure session dir %s: %w", dir, err)
 	}
 	return nil
@@ -427,7 +457,7 @@ func (m *SessionBoundManager) WriteSessionInputFile(
 	if err != nil {
 		return err
 	}
-	if err := m.client.MakeDir(ctx, handle, path.Dir(clean)); err != nil {
+	if err := ignoreExistingDir(m.client.MakeDir(ctx, handle, path.Dir(clean))); err != nil {
 		return fmt.Errorf("sandbox: create input directory: %w", err)
 	}
 	if err := m.client.WriteFile(ctx, handle, clean, content); err != nil {
@@ -510,6 +540,39 @@ func (m *SessionBoundManager) ReadSessionFile(
 		return nil, fmt.Errorf("sandbox: no live sandbox for session %s", sessionID)
 	}
 	return m.client.ReadFile(ctx, handle, filePath)
+}
+
+// WriteSessionFile writes an install/maintenance file into the session's live
+// sandbox. It is deliberately narrower than a general remote write: only the
+// tenant skills image root is accepted, because ordinary attachments must keep
+// using WriteSessionInputFile and its /workspace/input guard.
+func (m *SessionBoundManager) WriteSessionFile(
+	ctx context.Context, sessionID, filePath string, content []byte,
+) error {
+	if err := m.requireRemoteBackend(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return errors.New("sandbox: session ID required for file staging")
+	}
+	clean := path.Clean(strings.TrimSpace(filePath))
+	if clean != SkillsImageRoot && !strings.HasPrefix(clean, SkillsImageRoot+"/") {
+		return fmt.Errorf("sandbox: install file path %q is outside %s", filePath, SkillsImageRoot)
+	}
+	handle, err := m.resolveSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	// resetSkillDir already created this folder with mkdir -p. Cube's MakeDir
+	// then reports the existing directory as an error; ignoreExistingDir keeps
+	// that from aborting the seed of SKILL.md.
+	if err := ignoreExistingDir(m.client.MakeDir(ctx, handle, path.Dir(clean))); err != nil {
+		return fmt.Errorf("sandbox: create install directory: %w", err)
+	}
+	if err := m.client.WriteFile(ctx, handle, clean, content); err != nil {
+		return fmt.Errorf("sandbox: write install file %s: %w", clean, err)
+	}
+	return nil
 }
 
 // ShellExecOptions carries per-call shell execution knobs. The install-only
@@ -620,10 +683,17 @@ func (m *SessionBoundManager) ExecShellCommandWithOptions(
 	return remoteExecuteResult(execResult, execErr, duration), nil
 }
 
-// SessionShellExecutor advertises the shell-execution capability while a
-// real remote backend is active. Returns nil after Local fallback engages so
-// the tool layer refuses to run shell commands on the host machine.
+// SessionShellExecutor advertises the shell-execution capability while the
+// manager is open.
 func (m *SessionBoundManager) SessionShellExecutor() SessionShellExecutor {
+	if m == nil || m.remoteDisabled() {
+		return nil
+	}
+	return m
+}
+
+// SessionInstallShellExecutor advertises the privileged install-mode shell.
+func (m *SessionBoundManager) SessionInstallShellExecutor() SessionInstallShellExecutor {
 	if m == nil || m.remoteDisabled() {
 		return nil
 	}
@@ -647,7 +717,7 @@ func (m *SessionBoundManager) SessionFileStore() SessionFileStore {
 // here: their lifecycle is authoritative in the binding store and would
 // leak to any other WeKnora replica if this replica reaped them on shutdown.
 // Providers reclaim idle sandboxes via their own timeout/pause policies.
-func (m *SessionBoundManager) Cleanup(ctx context.Context) error {
+func (m *SessionBoundManager) Cleanup(_ context.Context) error {
 	if m == nil {
 		return nil
 	}
@@ -657,16 +727,48 @@ func (m *SessionBoundManager) Cleanup(ctx context.Context) error {
 		return nil
 	}
 	m.closed = true
-	fallback := m.fallback
 	m.mu.Unlock()
-
-	if fallback != nil {
-		return fallback.Cleanup(ctx)
-	}
 	return nil
 }
 
 // --- internal helpers --------------------------------------------------------
+
+// BeginSessionTurn opens the chat-turn lease for sessionID. The first
+// resolve after this may rebuild a stale image; later resolves of the same
+// turn keep the sandbox.
+func (m *SessionBoundManager) BeginSessionTurn(ctx context.Context, sessionID string) error {
+	if m == nil {
+		return nil
+	}
+	leaser, ok := m.bindings.(sessionTurnLeaseStore)
+	if !ok {
+		return nil
+	}
+	key, err := m.sessionKey(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	return leaser.BeginTurn(ctx, key)
+}
+
+// EndSessionTurn closes the chat-turn lease. It ignores request cancellation
+// so a disconnected client still releases the lease.
+func (m *SessionBoundManager) EndSessionTurn(ctx context.Context, sessionID string) error {
+	if m == nil {
+		return nil
+	}
+	leaser, ok := m.bindings.(sessionTurnLeaseStore)
+	if !ok {
+		return nil
+	}
+	key, err := m.sessionKey(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	return leaser.EndTurn(context.WithoutCancel(ctx), key)
+}
+
+var _ SessionTurnHolder = (*SessionBoundManager)(nil)
 
 // resolveSession resolves (or lazily creates) the remote sandbox bound to
 // sessionID. Persistent path only.
@@ -785,9 +887,12 @@ func (m *SessionBoundManager) sessionKey(
 }
 
 func (m *SessionBoundManager) remoteDisabled() bool {
+	if m == nil {
+		return true
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.fallback != nil || m.closed
+	return m.closed
 }
 
 func (m *SessionBoundManager) requireRemoteBackend() error {
@@ -798,12 +903,6 @@ func (m *SessionBoundManager) requireRemoteBackend() error {
 	defer m.mu.RUnlock()
 	if m.closed {
 		return ErrSandboxDisabled
-	}
-	if m.fallback != nil {
-		return fmt.Errorf(
-			"sandbox: remote-only capability requires the remote provider (current mode: %s)",
-			m.fallback.Type(),
-		)
 	}
 	return nil
 }
@@ -953,9 +1052,11 @@ func effectiveHTTPTimeout(provider RemoteProvider, cfg *Config) time.Duration {
 }
 
 var (
-	_ SessionCapabilityProvider = (*SessionBoundManager)(nil)
-	_ SessionShellExecutor      = (*SessionBoundManager)(nil)
-	_ SessionFileStore          = (*SessionBoundManager)(nil)
+	_ SessionCapabilityProvider        = (*SessionBoundManager)(nil)
+	_ SessionShellExecutor             = (*SessionBoundManager)(nil)
+	_ SessionFileStore                 = (*SessionBoundManager)(nil)
+	_ SessionInstallCapabilityProvider = (*SessionBoundManager)(nil)
+	_ SessionInstallShellExecutor      = (*SessionBoundManager)(nil)
 )
 
 // PermissiveSessionExistenceChecker accepts every session. It is safe in

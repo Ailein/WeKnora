@@ -697,6 +697,11 @@ definitions:
         type: string
       cube_sandbox_ttl_seconds:
         type: integer
+      dns_servers:
+        description: DNSServers are Cube template nameserver IPs. Empty uses Cubelet's default.
+        items:
+          type: string
+        type: array
       http_timeout_sec:
         description: |-
           HTTPTimeoutSec bounds each HTTP call to the sandbox control plane.
@@ -3836,10 +3841,23 @@ definitions:
           place secrets here that scripts must not access."
         type: object
       sandbox_type:
+        description: SandboxType is cube, e2b, or docker; disabled is the hidden policy row.
+        type: string
+      skill_image:
+        allOf:
+        - $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.SkillImageConfig'
         description: |-
-          SandboxType selects the sandbox backend. Named configs may use "cube",
-          "e2b", "docker", or "local". "disabled" is reserved for the hidden
-          workspace policy row.
+          SkillImage points at the snapshot that carries this config's installed
+          skills. Empty means "use the base template". Written only by the skill
+          install/remove path: MergeSandboxConfigForUpdate ignores client values
+          so a settings-form save cannot wipe or plant the pointer.
+      skill_rollout:
+        description: |-
+          SkillRollout decides whether sessions that already hold a sandbox of
+          this config rebuild after a skill install or removal. Empty and
+          SkillRolloutNextTurn rebuild on the next chat turn. SkillRolloutNewSession
+          leaves those sandboxes on the previous image; only sessions that start
+          afterwards boot the new snapshot.
         type: string
       skill_image:
         allOf:
@@ -6025,6 +6043,24 @@ definitions:
         type: string
     required:
     - name
+    type: object
+  internal_handler.skillPatchRequest:
+    properties:
+      enabled:
+        description: |-
+          Enabled is a pointer because its absence is a bad request rather than a
+          request to disable the skill.
+        type: boolean
+    type: object
+  internal_handler.skillSourceRequest:
+    properties:
+      source:
+        description: |-
+          Source is exactly one of: "@owner/slug" or a slash-free slug (ClawHub),
+          a github.com / gitlab.com / skills.sh / clawhub / skillhub page URL, or
+          a direct zip/SKILL.md URL. Bare "owner/slug" is rejected: it is both a
+          ClawHub id and a GitHub repo. The fetch carries no credential.
+        type: string
     type: object
   internal_handler.storageBackendRequest:
     properties:
@@ -9754,6 +9790,14 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.SearchParams'
+      - default: handle
+        description: 文件引用形式，public 返回可加载直链
+        enum:
+        - handle
+        - public
+        in: query
+        name: resource_urls
+        type: string
       produces:
       - application/json
       responses:
@@ -9788,6 +9832,14 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/github_com_Tencent_WeKnora_internal_types.SearchParams'
+      - default: handle
+        description: 文件引用形式，public 返回可加载直链
+        enum:
+        - handle
+        - public
+        in: query
+        name: resource_urls
+        type: string
       produces:
       - application/json
       responses:
@@ -14079,6 +14131,389 @@ paths:
       summary: Inspect sandbox config inventory
       tags:
       - SandboxConfig
+  /sandbox-configs/{id}/skills:
+    get:
+      description: List the agent skills installed onto one sandbox config's image.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Installed skills
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Sandbox config not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: List installed skills
+      tags:
+      - SandboxConfig
+    post:
+      consumes:
+      - application/json
+      - multipart/form-data
+      description: |-
+        Install a skill onto this sandbox config's image. Send a zip
+        as multipart form field "file", or JSON {"source":"..."} to
+        pull a public skill. source is one of: "@owner/slug" or a
+        slash-free slug (ClawHub), a github.com / gitlab.com /
+        skills.sh / clawhub / skillhub URL, or a direct zip/SKILL.md
+        URL. Bare "owner/slug" is rejected as ambiguous. The source
+        must be readable anonymously. The install boots a sandbox and
+        runs for minutes, so the request is only accepted; follow it
+        via the install-events stream.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Skill bundle (zip)
+        in: formData
+        name: file
+        type: file
+      - description: Install from a registry, git host, or archive URL
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/internal_handler.skillSourceRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Install accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing, oversized or invalid bundle or source
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Sandbox config not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: Install a skill
+      tags:
+      - SandboxConfig
+  /sandbox-configs/{id}/skills/{skillId}:
+    delete:
+      description: |-
+        Remove a skill from the config's image. The removal rebuilds
+        the image and runs for minutes, so it is only accepted; follow
+        it via the install-events stream.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Skill ID
+        in: path
+        name: skillId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Removal accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Skill not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: Remove an installed skill
+      tags:
+      - SandboxConfig
+    get:
+      description: Retrieve one installed skill of a sandbox config.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Skill ID
+        in: path
+        name: skillId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Installed skill
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Skill not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: Get an installed skill
+      tags:
+      - SandboxConfig
+    patch:
+      consumes:
+      - application/json
+      description: Show or hide an installed skill. The files stay in the image either
+        way; removal is a separate flow.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Skill ID
+        in: path
+        name: skillId
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handler.skillPatchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated skill
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Skill not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: Update an installed skill
+      tags:
+      - SandboxConfig
+  /sandbox-configs/{id}/skills/{skillId}/files:
+    get:
+      description: List files in the stored skill bundle without starting a sandbox.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Skill ID
+        in: path
+        name: skillId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Skill files
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Skill or files not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: List files of an installed skill
+      tags:
+      - SandboxConfig
+  /sandbox-configs/{id}/skills/{skillId}/files/content:
+    get:
+      description: Read one skill file as UTF-8, a small base64 image, or binary.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Skill ID
+        in: path
+        name: skillId
+        required: true
+        type: string
+      - description: Skill-root-relative file path
+        in: query
+        name: path
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Skill file
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid path
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Skill or file not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: Read one file of an installed skill
+      tags:
+      - SandboxConfig
+  /sandbox-configs/{id}/skills/{skillId}/install-events:
+    get:
+      description: |-
+        Server-sent progress for one install or removal. The stream
+        always terminates: with the run's own terminal event, with one
+        derived from the durable status, or with a "detached" frame
+        when it stops following a run that is still going.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Skill ID
+        in: path
+        name: skillId
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream of progress events
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Skill not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: Follow an install or removal
+      tags:
+      - SandboxConfig
+  /sandbox-configs/{id}/skills/{skillId}/transcript:
+    get:
+      description: |-
+        Server-sent replay of everything the installer agent did — the
+        prompt it was given, its thinking, the commands it ran and
+        their output — followed live while the install is still
+        running. Frames are the same shape the chat stream uses, so a
+        console renders an install with the components it renders a
+        chat turn with. 404 once the event log has expired; the
+        durable message history is the fallback.
+      parameters:
+      - description: Sandbox config ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Skill ID
+        in: path
+        name: skillId
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream of transcript events
+          schema:
+            type: string
+        "204":
+          description: Install is still preparing; retry once locators exist
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Skill or transcript not found
+          schema:
+            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
+      security:
+      - Bearer: []
+      - ApiKeyAuth: []
+      summary: Follow an install's agent transcript
+      tags:
+      - SandboxConfig
   /sessions:
     get:
       consumes:
@@ -14638,7 +15073,12 @@ paths:
     get:
       consumes:
       - application/json
-      description: 获取所有预装的Agent Skills元数据
+      description: 返回指定沙盒配置镜像内、智能体实际能调用的已安装技能（ready 且启用）。不传 sandbox_config_id 时列表为空。
+      parameters:
+      - description: Sandbox config ID
+        in: query
+        name: sandbox_config_id
+        type: string
       produces:
       - application/json
       responses:
@@ -14647,14 +15087,10 @@ paths:
           schema:
             additionalProperties: true
             type: object
-        "500":
-          description: 服务器错误
-          schema:
-            $ref: '#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError'
       security:
       - Bearer: []
       - ApiKeyAuth: []
-      summary: 获取预装Skills列表
+      summary: 获取当前沙盒配置上可执行的 Skills
       tags:
       - Skills
   /storage-backends:

@@ -1,4 +1,4 @@
-import { get, post, put, del } from '@/utils/request'
+import { get, post, put, del, patch, postUpload } from '@/utils/request'
 import type { CreatedTenantAPIKey, TenantAPIKey, TenantAPIKeyCapability } from '@/api/tenant'
 
 export interface CreatePlatformAPIKeyPayload {
@@ -737,6 +737,7 @@ export interface SandboxCubeConfig {
   template_id?: string
   http_timeout_sec?: number
   cube_sandbox_ttl_seconds?: number
+  dns_servers?: string[]
 }
 
 export interface SandboxE2BConfig {
@@ -749,12 +750,22 @@ export interface SandboxE2BConfig {
   e2b_sandbox_ttl_seconds?: number
 }
 
+export interface SandboxSkillImage {
+  snapshot_id?: string
+  generation?: number
+  built_at?: string
+  base_template_id?: string
+  owner_fingerprint?: string
+}
+
 export interface SandboxConfig {
   sandbox_type?: string
   default_timeout_sec?: number
   allow_private_endpoints?: boolean
   env_vars?: Record<string, string>
   volume_mount?: SandboxVolumeMountConfig
+  skill_image?: SandboxSkillImage
+  skill_rollout?: 'next_turn' | 'new_session'
   cube?: SandboxCubeConfig
   e2b?: SandboxE2BConfig
   docker?: SandboxDockerConfig
@@ -802,6 +813,9 @@ export interface SandboxTemplate {
   standard: boolean
   /** The provider's own explanation for a failed build, when it reports one. */
   error?: string
+  instance_type?: string
+  network_type?: string
+  allow_internet_access?: boolean
 }
 
 export interface SandboxTemplateCatalog {
@@ -844,7 +858,7 @@ export interface SandboxInventory {
 }
 
 /** Sandbox backends managed as named workspace configurations. */
-export const NAMED_SANDBOX_BACKEND_TYPES = ['cube', 'e2b', 'docker', 'local'] as const
+export const NAMED_SANDBOX_BACKEND_TYPES = ['cube', 'e2b', 'docker'] as const
 
 export function isNamedSandboxBackend(type: string): boolean {
   return (NAMED_SANDBOX_BACKEND_TYPES as readonly string[]).includes(type)
@@ -911,12 +925,15 @@ export function getSandboxConfigInventory(id: string): Promise<{ data: SandboxIn
 /**
  * Fetch templates using the connection currently entered in the drawer.
  * `ensure_standard` starts a provider-side build when no WeKnora template is
- * present; the returned building item can be polled through the same endpoint.
+ * present. `replace_standard` rebuilds the WeKnora template so a new spec
+ * (DNS, image) can take effect; it requires `config_id`. The returned
+ * building item can be polled through the same endpoint.
  */
 export function querySandboxTemplates(payload: {
   config: SandboxConfig
   config_id?: string
   ensure_standard?: boolean
+  replace_standard?: boolean
 }): Promise<{ data: SandboxTemplateCatalog }> {
   return post('/api/v1/sandbox-configs/templates/query', payload) as unknown as Promise<{
     data: SandboxTemplateCatalog
@@ -950,7 +967,10 @@ export function checkSandboxConfig(payload: {
  * `sandbox_inventory_unverifiable` says the backend is unreachable, so nothing
  * could be counted — the one case a force delete may override.
  */
-export type SandboxConflictCode = 'sandboxes_still_live' | 'sandbox_inventory_unverifiable'
+export type SandboxConflictCode =
+  | 'sandboxes_still_live'
+  | 'sandbox_inventory_unverifiable'
+  | 'skill_snapshot_blocks_template'
 
 export interface SandboxConflict {
   code: SandboxConflictCode
@@ -974,9 +994,138 @@ export function parseSandboxConflict(err: unknown): SandboxConflict | null {
   if (!detail || typeof detail !== 'object') return null
   if (
     detail.code !== 'sandboxes_still_live' &&
-    detail.code !== 'sandbox_inventory_unverifiable'
+    detail.code !== 'sandbox_inventory_unverifiable' &&
+    detail.code !== 'skill_snapshot_blocks_template'
   ) {
     return null
   }
   return { code: detail.code, message: detail.message, inventory: detail.data }
+}
+
+// --- Agent skills installed onto a sandbox config's image ---
+
+export type ConfigSkillStatus = 'installing' | 'ready' | 'failed' | 'removing' | 'removed'
+
+export interface ConfigSkill {
+  id: string
+  name: string
+  version?: string
+  description?: string
+  enabled: boolean
+  status: ConfigSkillStatus | string
+  error?: string
+  bundle_sha256?: string
+  installed_snapshot_id?: string
+  // Locators for this skill's most recent install conversation. Absent for
+  // skills installed before transcripts existed, which is how the drawer
+  // decides whether to offer the "view install" entry point.
+  install_session_id?: string
+  install_message_id?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ConfigSkillInstallEvent {
+  percent: number
+  stage: string
+  log?: string
+  status?: string
+  done: boolean
+}
+
+export function listConfigSkills(configId: string): Promise<{ data: ConfigSkill[] }> {
+  return get(`/api/v1/sandbox-configs/${configId}/skills`) as unknown as Promise<{ data: ConfigSkill[] }>
+}
+
+export function uploadConfigSkill(
+  configId: string, file: File, onProgress?: (percent: number) => void,
+): Promise<{ data: { skill_id: string } }> {
+  const form = new FormData()
+  form.append('file', file)
+  return postUpload(`/api/v1/sandbox-configs/${configId}/skills`, form, (e: any) => {
+    if (e.total) onProgress?.(Math.round((e.loaded * 100) / e.total))
+  }, { timeout: 5 * 60 * 1000 })
+}
+
+export function installConfigSkillFromSource(
+  configId: string,
+  payload: { source: string },
+): Promise<{ data: { skill_id: string } }> {
+  return post(`/api/v1/sandbox-configs/${configId}/skills`, payload, {
+    timeout: 2 * 60 * 1000,
+  }) as unknown as Promise<{ data: { skill_id: string } }>
+}
+
+export function patchConfigSkill(
+  configId: string,
+  skillId: string,
+  payload: { enabled: boolean },
+): Promise<{ data: ConfigSkill }> {
+  return patch(`/api/v1/sandbox-configs/${configId}/skills/${skillId}`, payload) as unknown as Promise<{
+    data: ConfigSkill
+  }>
+}
+
+export function deleteConfigSkill(
+  configId: string,
+  skillId: string,
+): Promise<{ data: { skill_id: string } }> {
+  return del(`/api/v1/sandbox-configs/${configId}/skills/${skillId}`) as unknown as Promise<{
+    data: { skill_id: string }
+  }>
+}
+
+export function getConfigSkill(
+  configId: string,
+  skillId: string,
+): Promise<{ data: ConfigSkill }> {
+  return get(`/api/v1/sandbox-configs/${configId}/skills/${skillId}`) as unknown as Promise<{
+    data: ConfigSkill
+  }>
+}
+
+export function configSkillInstallEventsUrl(configId: string, skillId: string): string {
+  return `/api/v1/sandbox-configs/${configId}/skills/${skillId}/install-events`
+}
+
+// The installer agent's own transcript: its prompt, thinking, commands and
+// their output, replayed from the start and then followed live. Answers 404
+// once the event log has expired, which is the signal to read the durable
+// message history instead.
+export function configSkillTranscriptUrl(configId: string, skillId: string): string {
+  return `/api/v1/sandbox-configs/${configId}/skills/${skillId}/transcript`
+}
+
+export interface ConfigSkillFileEntry {
+  path: string
+  size: number
+}
+
+export interface ConfigSkillFileContent {
+  path: string
+  size: number
+  encoding: 'utf-8' | 'base64' | 'binary' | string
+  content?: string
+  media_type?: string
+  truncated?: boolean
+  binary?: boolean
+}
+
+export function listConfigSkillFiles(
+  configId: string,
+  skillId: string,
+): Promise<{ data: ConfigSkillFileEntry[] }> {
+  return get(`/api/v1/sandbox-configs/${configId}/skills/${skillId}/files`) as unknown as Promise<{
+    data: ConfigSkillFileEntry[]
+  }>
+}
+
+export function getConfigSkillFile(
+  configId: string,
+  skillId: string,
+  path: string,
+): Promise<{ data: ConfigSkillFileContent }> {
+  return get(`/api/v1/sandbox-configs/${configId}/skills/${skillId}/files/content`, {
+    params: { path },
+  }) as unknown as Promise<{ data: ConfigSkillFileContent }>
 }

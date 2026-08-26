@@ -1,5 +1,5 @@
 -- Rollback: 000089_im_inbox
-DO $$ BEGIN RAISE NOTICE '[Migration 000089] Dropping IM operator inbox columns'; END $$;
+DO $$ BEGIN RAISE NOTICE '[Migration 000091] Dropping IM operator inbox columns'; END $$;
 
 DROP TABLE IF EXISTS im_quick_replies;
 
@@ -10,4 +10,4 @@ ALTER TABLE im_channel_sessions
     DROP COLUMN IF EXISTS operator_unread_count,
     DROP COLUMN IF EXISTS peer_name;
 
-DO $$ BEGIN RAISE NOTICE '[Migration 000089] IM operator inbox columns dropped'; END $$;
+DO $$ BEGIN RAISE NOTICE '[Migration 000091] IM operator inbox columns dropped'; END $$;

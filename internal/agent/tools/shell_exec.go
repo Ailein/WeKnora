@@ -7,10 +7,9 @@
 //
 // Design notes:
 //
-//   - Cube-only capability: registration is feature-gated on the sandbox
-//     backend exposing SandboxCommandExecutor. Docker / Local backends do
-//     NOT satisfy the interface, preserving their existing stateless
-//     security model. shell_exec never runs on the WeKnora host.
+//   - Session-sandbox capability: registration is feature-gated on the
+//     sandbox backend exposing SandboxCommandExecutor (Cube, E2B, Docker).
+//     shell_exec never runs on the WeKnora host.
 //   - Session-scoped: the sandbox is resolved from ToolExecContext.SessionID
 //     so the LLM cannot execute against a foreign session, and installed
 //     dependencies persist across subsequent tool calls in the same session.
@@ -184,8 +183,8 @@ var shellExecTool = BaseTool{
 - Obviously destructive patterns (` + "`rm -rf /`" + `, fork bombs, ` + "`mkfs`" + `, ` + "`shutdown`" + `)
   are refused up-front. Cleaning up your own scratch dir (e.g.
   ` + "`rm -rf /workspace/tmp`" + `) is fine.
-- Only available when the sandbox backend is Remote SandBox. On Docker / Local
-  deployments this tool is not registered.`,
+- Only available when the session sandbox advertises a command executor
+  (Cube, E2B, Docker). The command never runs on the WeKnora host.`,
 	schema: utils.GenerateSchema[ShellExecInput](),
 }
 
@@ -207,10 +206,56 @@ type ShellExecInput struct {
 	Env map[string]string `json:"env,omitempty" jsonschema:"Optional extra environment variables, e.g. {\"PIP_INDEX_URL\":\"https://mirrors.example.com/pypi/simple\"}."`
 }
 
+// SandboxInstallCommandExecutor is the privileged counterpart of
+// SandboxCommandExecutor, satisfied by *sandbox.SessionBoundManager via
+// sandbox.SessionInstallShellExecutor. It exists as its own named type so the
+// install privilege can only be handed over deliberately: nothing that merely
+// implements ExecShellCommand can be mistaken for it.
+type SandboxInstallCommandExecutor interface {
+	ExecShellCommandWithOptions(
+		ctx context.Context,
+		sessionID string,
+		command string,
+		opts sandbox.ShellExecOptions,
+	) (*sandbox.ExecuteResult, error)
+}
+
+// installShellExecutor adapts the privileged executor to the plain executor
+// contract the tool speaks, stamping every call as root with the skills image
+// root writable. The install agent's whole job is to install dependencies into
+// that image, which the default user cannot write.
+type installShellExecutor struct {
+	inner SandboxInstallCommandExecutor
+}
+
+func (e installShellExecutor) ExecShellCommand(
+	ctx context.Context,
+	sessionID string,
+	command string,
+	workDir string,
+	timeout time.Duration,
+	env map[string]string,
+) (*sandbox.ExecuteResult, error) {
+	return e.inner.ExecShellCommandWithOptions(ctx, sessionID, command, sandbox.ShellExecOptions{
+		WorkDir:         workDir,
+		Timeout:         timeout,
+		Env:             env,
+		AllowSkillsRoot: true,
+		AsRoot:          true,
+	})
+}
+
 // ShellExecTool executes shell commands inside the session's sandbox.
 type ShellExecTool struct {
 	BaseTool
 	executor SandboxCommandExecutor
+	// workDirRoots are the directories work_dir may point inside. Ordinary
+	// sessions get /workspace only; install mode adds the skills image root.
+	workDirRoots []string
+	// defaultTimeout is applied when the caller omits timeout_sec. Ordinary
+	// sessions keep the 120s default; install mode uses the 10-minute cap
+	// because dependency installs routinely exceed two minutes.
+	defaultTimeout time.Duration
 }
 
 // NewShellExecTool constructs the tool. `executor` MUST NOT be nil:
@@ -218,8 +263,21 @@ type ShellExecTool struct {
 // does not support ad-hoc shell execution (i.e. is not Cube).
 func NewShellExecTool(executor SandboxCommandExecutor) *ShellExecTool {
 	return &ShellExecTool{
-		BaseTool: shellExecTool,
-		executor: executor,
+		BaseTool:     shellExecTool,
+		executor:     executor,
+		workDirRoots: []string{defaultShellExecWorkDir},
+	}
+}
+
+// NewInstallShellExecTool constructs the install-mode variant: commands run as
+// root and may work inside the skills image root. It is registered only for
+// the built-in skill installer agent (see AgentConfig.SkillInstallMode).
+func NewInstallShellExecTool(executor SandboxInstallCommandExecutor) *ShellExecTool {
+	return &ShellExecTool{
+		BaseTool:       shellExecTool,
+		executor:       installShellExecutor{inner: executor},
+		workDirRoots:   []string{defaultShellExecWorkDir, sandbox.SkillsImageRoot},
+		defaultTimeout: shellExecMaxTimeout,
 	}
 }
 
@@ -282,18 +340,21 @@ func (t *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (*typ
 		workDir = defaultShellExecWorkDir
 	}
 	cleanWorkDir := path.Clean(workDir)
-	if !isUnderRoot(cleanWorkDir, defaultShellExecWorkDir) {
+	if !t.workDirAllowed(cleanWorkDir) {
 		return &types.ToolResult{
 			Success: false,
 			Error: fmt.Sprintf(
-				"work_dir %q is outside the sandbox workspace %q",
-				input.WorkDir, defaultShellExecWorkDir,
+				"work_dir %q is outside the allowed sandbox roots %s",
+				input.WorkDir, strings.Join(t.allowedWorkDirRoots(), ", "),
 			),
 		}, nil
 	}
 	workDir = cleanWorkDir
 
-	timeout := defaultShellExecTimeout
+	timeout := t.defaultTimeout
+	if timeout <= 0 {
+		timeout = defaultShellExecTimeout
+	}
 	if input.TimeoutSec > 0 {
 		timeout = time.Duration(input.TimeoutSec) * time.Second
 	}
@@ -369,6 +430,7 @@ func (t *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (*typ
 	// only mark Success=false when a wire-level problem prevented the command
 	// from running at all (already handled above via err != nil).
 	resultData := map[string]interface{}{
+		"display_type":           "shell_exec",
 		"session_id":             sessionID,
 		"command":                command,
 		"work_dir":               workDir,
@@ -406,6 +468,24 @@ func (t *ShellExecTool) Execute(ctx context.Context, args json.RawMessage) (*typ
 		Output:  visibleOutput,
 		Data:    resultData,
 	}, nil
+}
+
+// allowedWorkDirRoots defaults to /workspace so a zero-value tool (or one
+// built before install mode existed) keeps the ordinary contract.
+func (t *ShellExecTool) allowedWorkDirRoots() []string {
+	if len(t.workDirRoots) == 0 {
+		return []string{defaultShellExecWorkDir}
+	}
+	return t.workDirRoots
+}
+
+func (t *ShellExecTool) workDirAllowed(cleanWorkDir string) bool {
+	for _, root := range t.allowedWorkDirRoots() {
+		if isUnderRoot(cleanWorkDir, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveShellOutputLimit(requested int) int {

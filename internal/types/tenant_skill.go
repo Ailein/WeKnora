@@ -16,7 +16,8 @@ const (
 )
 
 // Snapshot ledger states. deleted is written only after a real provider-side
-// delete, which today happens only when the whole sandbox config is removed.
+// delete: either the whole sandbox config is removed, or the reaper has
+// pruned a retired snapshot past its retention window.
 const (
 	SkillSnapshotStateBuilding   = "building"
 	SkillSnapshotStateActive     = "active"
@@ -29,6 +30,14 @@ const (
 	SkillSnapshotTriggerRemove  = "remove"
 	SkillSnapshotTriggerRebuild = "rebuild"
 )
+
+// SkillMaintenanceSessionMarker tags the sessions that skill image operations
+// run in. Those sessions carry a real agent transcript that is deliberately
+// kept for troubleshooting, but they are infrastructure rather than
+// conversations, so the console must never list them. This mirrors how embed
+// sessions are classified (EmbedSessionMarkerPrefix): a description prefix,
+// so no schema change is needed.
+const SkillMaintenanceSessionMarker = "skill_maintenance:"
 
 // TenantSkillEntity is one skill installed onto one sandbox config.
 //
@@ -63,6 +72,13 @@ type TenantSkillEntity struct {
 	// kept for audit and chain troubleshooting.
 	InstalledSnapshotID string `gorm:"type:varchar(255)"`
 
+	// InstallSessionID / InstallMessageID locate the installer agent's
+	// transcript for the most recent install of this skill. A re-install
+	// overwrites them: the previous run's conversation is superseded by the
+	// one that produced the image now in service.
+	InstallSessionID string `gorm:"type:varchar(36)"`
+	InstallMessageID string `gorm:"type:varchar(36)"`
+
 	Status string `gorm:"type:varchar(32);not null"`
 	Error  string `gorm:"type:text"`
 	// InstallingSince drives the stuck-run reaper for both install and remove.
@@ -90,6 +106,15 @@ type TenantSkillSnapshotEntity struct {
 	SnapshotID       string `gorm:"type:varchar(255)"`
 	ParentSnapshotID string `gorm:"type:varchar(255)"`
 	Generation       int
+
+	// PlannedName is the name handed to CreateSnapshot. It is written before
+	// the provider call, which is what makes an abandoned build identifiable:
+	// SnapshotID can only be recorded once the provider has answered, so a
+	// process that died in between left a snapshot the ledger could not name
+	// and therefore could never reclaim. Matching is by name because only
+	// Docker's ID is derivable from it; Cube and E2B mint their own and echo
+	// the name back in the listing.
+	PlannedName string `gorm:"type:varchar(255)"`
 
 	Trigger string `gorm:"type:varchar(16)"`
 	State   string `gorm:"type:varchar(16);index"`

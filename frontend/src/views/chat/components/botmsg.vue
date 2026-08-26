@@ -79,19 +79,14 @@
                      assistant message actually recorded any generated files.
                      Emptiness is the default: the button stays hidden for
                      conversational messages that never touched a skill. -->
-                <t-badge
-                    v-if="hasArtifacts"
-                    :count="artifactCount"
-                    :offset="[-4, 4]"
-                    shape="round"
-                    size="small"
-                >
+                <span v-if="hasArtifacts" class="answer-toolbar__artifact">
                     <t-button size="small" variant="outline" shape="round"
                         @click.stop="openArtifactDrawer"
                         :title="$t('agent.artifactDrawer.buttonTitle')">
                         <t-icon name="download" />
                     </t-button>
-                </t-badge>
+                    <span class="answer-toolbar__artifact-count" aria-hidden="true">{{ artifactCount }}</span>
+                </span>
                 <!-- Fallback 提示图标 -->
                 <t-tooltip v-if="session.is_fallback" :content="$t('chat.fallbackHint')" placement="top">
                     <t-button size="small" variant="outline" shape="round" class="fallback-icon-btn">
@@ -158,6 +153,7 @@ import { refreshMarkdownEnhancements } from '@/utils/markdownEnhancements';
 import { useChatCitationPopover } from '@/composables/useChatCitationPopover';
 import { useTypewriter } from '@/composables/useTypewriter';
 import { vStableHtml } from '@/directives/stableHtml';
+import { SKILL_ICON } from '@/types/mention';
 
 ensureMermaidInitialized();
 
@@ -169,7 +165,7 @@ const mentionTagClass = (item) => {
 const mentionTagIcon = (item) => {
     if (item.type === 'tag') return 'tag';
     if (item.type === 'mcp') return 'tools';
-    if (item.type === 'skill') return 'bookmark';
+    if (item.type === 'skill') return SKILL_ICON;
     return 'file';
 };
 
