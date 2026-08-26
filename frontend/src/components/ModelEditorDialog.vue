@@ -950,15 +950,6 @@ const submitCodexOAuthPaste = async () => {
   }
 }
 
-// 切换到其他厂商时终止授权流程，避免残留轮询。
-watch(isCodex, (val) => {
-  if (!val) resetCodexOAuth()
-})
-
-onUnmounted(() => {
-  stopCodexOAuthPolling()
-})
-
 const isLkeapRerank = computed(
   () => activeModelType.value === 'rerank' && formData.value.provider === 'lkeap',
 )
@@ -1122,6 +1113,17 @@ const formData = ref<ModelFormData>({
   appSecret: '',
   lkeapRegion: 'ap-guangzhou',
   refreshToken: '',
+})
+
+// 切换到其他厂商时终止 Codex 授权流程，避免残留轮询。
+// 注意必须放在 formData 定义之后：watch 会在 setup 期同步求值 isCodex
+//（进而读 formData），放前面会触发 TDZ ReferenceError。
+watch(isCodex, (val) => {
+  if (!val) resetCodexOAuth()
+})
+
+onUnmounted(() => {
+  stopCodexOAuthPolling()
 })
 
 const rules = computed(() => ({
