@@ -33,13 +33,13 @@ func TestResolveURLPath(t *testing.T) {
 func TestResolveRejectsBadPaths(t *testing.T) {
 	setupAssets(t)
 	bad := []string{
-		URLPrefix + "demo/../demo/qr.png",  // traversal
-		URLPrefix + "..%2Fdemo/qr.png",     // encoded-ish junk segment
-		URLPrefix + "demo/secret.txt",      // extension not whitelisted
-		URLPrefix + "demo/.hidden.png",     // dotfile
-		URLPrefix + "demo/missing.png",     // absent
-		URLPrefix + "demo",                 // no file part
-		"/api/v1/other/demo/qr.png",        // wrong prefix
+		URLPrefix + "demo/../demo/qr.png", // traversal
+		URLPrefix + "..%2Fdemo/qr.png",    // encoded-ish junk segment
+		URLPrefix + "demo/secret.txt",     // extension not whitelisted
+		URLPrefix + "demo/.hidden.png",    // dotfile
+		URLPrefix + "demo/missing.png",    // absent
+		URLPrefix + "demo",                // no file part
+		"/api/v1/other/demo/qr.png",       // wrong prefix
 	}
 	for _, p := range bad {
 		if _, _, err := ResolveURLPath(p); err == nil {

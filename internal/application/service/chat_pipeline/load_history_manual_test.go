@@ -35,7 +35,7 @@ func TestLoadAndProcessHistory_AppendsManualReplies(t *testing.T) {
 		{Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
 		{Role: "assistant", RequestID: "r1", Content: "回答一", CreatedAt: base.Add(time.Second)},
 		{Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
-			Content: "人工补充",
+			Content:     "人工补充",
 			Attachments: types.MessageAttachments{{FileName: "合同.pdf"}},
 			CreatedAt:   base.Add(2 * time.Second)},
 		{Role: "user", RequestID: "r2", Content: "问题二", CreatedAt: base.Add(3 * time.Second)},

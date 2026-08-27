@@ -102,16 +102,16 @@ func AllProviders() []ProviderName {
 
 // ProviderInfo 包含提供者的元数据
 type ProviderInfo struct {
-	Name         ProviderName               // 提供者标识
-	DisplayName  string                     // 可读名称
-	Description  string                     // 提供者描述
-	DefaultURLs  map[types.ModelType]string // 按模型类型区分的默认 BaseURL
+	Name        ProviderName               // 提供者标识
+	DisplayName string                     // 可读名称
+	Description string                     // 提供者描述
+	DefaultURLs map[types.ModelType]string // 按模型类型区分的默认 BaseURL
 	// KnownModels 按模型类型列出该厂商可用的模型名（前端据此渲染可选下拉并
 	// 自动填第一个）。仅在模型集合封闭且可枚举时填写（如订阅通道），开放
 	// 通道留空让用户自由输入。
 	KnownModels  map[types.ModelType][]string
-	ModelTypes   []types.ModelType // 支持的模型类型
-	RequiresAuth bool              // 是否需要 API key
+	ModelTypes   []types.ModelType  // 支持的模型类型
+	RequiresAuth bool               // 是否需要 API key
 	ExtraFields  []ExtraFieldConfig // 额外配置字段
 }
 

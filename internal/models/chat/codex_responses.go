@@ -122,16 +122,16 @@ type codexReasoning struct {
 }
 
 type codexRequest struct {
-	Model             string          `json:"model"`
-	Store             bool            `json:"store"`
-	Stream            bool            `json:"stream"`
-	Instructions      string          `json:"instructions,omitempty"`
+	Model             string           `json:"model"`
+	Store             bool             `json:"store"`
+	Stream            bool             `json:"stream"`
+	Instructions      string           `json:"instructions,omitempty"`
 	Input             []codexInputItem `json:"input"`
-	Tools             []codexTool     `json:"tools,omitempty"`
-	ToolChoice        any             `json:"tool_choice,omitempty"`
-	ParallelToolCalls bool            `json:"parallel_tool_calls"`
-	Reasoning         *codexReasoning `json:"reasoning,omitempty"`
-	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
+	Tools             []codexTool      `json:"tools,omitempty"`
+	ToolChoice        any              `json:"tool_choice,omitempty"`
+	ParallelToolCalls bool             `json:"parallel_tool_calls"`
+	Reasoning         *codexReasoning  `json:"reasoning,omitempty"`
+	PromptCacheKey    string           `json:"prompt_cache_key,omitempty"`
 }
 
 var codexReasoningEfforts = map[string]bool{

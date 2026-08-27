@@ -559,7 +559,7 @@ const apiProviderOptions = ref<ModelProviderOption[]>([])
 const loadingProviders = ref(false)
 
 // 硬编码的后备 Provider 配置 (当 API 不可用时使用)
-const fallbackProviderOptions = computed<ModelProviderOption[]>(() => [
+const fallbackProviderOptions = computed<ModelProviderOption[]>((): ModelProviderOption[] => [
   {
     value: 'openai',
     label: t('model.editor.providers.openai.label'),

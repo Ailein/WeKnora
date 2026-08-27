@@ -14,16 +14,16 @@ const DefaultMaxContextTokens = 200000
 // AgentConfig represents the full agent configuration (used at tenant level and runtime)
 // This includes all configuration parameters for agent execution
 type AgentConfig struct {
-	MaxIterations  int      `json:"max_iterations"`          // Maximum number of ReAct iterations
-	AllowedTools   []string `json:"allowed_tools"`           // List of allowed tool names
-	Temperature    float64  `json:"temperature"`             // LLM temperature for agent
+	MaxIterations int      `json:"max_iterations"` // Maximum number of ReAct iterations
+	AllowedTools  []string `json:"allowed_tools"`  // List of allowed tool names
+	Temperature   float64  `json:"temperature"`    // LLM temperature for agent
 	// ForceToolFirstRound sends tool_choice="required" on the first ReAct round so the
 	// model must call at least one tool (e.g. retrieval) before it can produce a final
 	// answer. Guards grounded agents against answering fact questions from memory.
-	ForceToolFirstRound bool `json:"force_tool_first_round,omitempty"`
-	KnowledgeBases []string `json:"knowledge_bases"`         // Accessible knowledge base IDs
-	KnowledgeIDs   []string `json:"knowledge_ids"`           // Accessible knowledge IDs (individual documents)
-	SystemPrompt   string   `json:"system_prompt,omitempty"` // Unified system prompt (uses web_search_status placeholder for dynamic behavior)
+	ForceToolFirstRound bool     `json:"force_tool_first_round,omitempty"`
+	KnowledgeBases      []string `json:"knowledge_bases"`         // Accessible knowledge base IDs
+	KnowledgeIDs        []string `json:"knowledge_ids"`           // Accessible knowledge IDs (individual documents)
+	SystemPrompt        string   `json:"system_prompt,omitempty"` // Unified system prompt (uses web_search_status placeholder for dynamic behavior)
 	// Deprecated: Use SystemPrompt instead. Kept for backward compatibility during migration.
 	SystemPromptWebEnabled  string        `json:"system_prompt_web_enabled,omitempty"`  // Deprecated: Custom prompt when web search is enabled
 	SystemPromptWebDisabled string        `json:"system_prompt_web_disabled,omitempty"` // Deprecated: Custom prompt when web search is disabled
