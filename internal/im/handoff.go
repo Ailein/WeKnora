@@ -12,6 +12,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/utils"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -51,7 +52,13 @@ const (
 
 // handoffWebhookClient posts trigger notifications; short timeout so a dead
 // webhook endpoint never backs up message handling (sends run in goroutines).
-var handoffWebhookClient = &http.Client{Timeout: 8 * time.Second}
+// SSRF-safe like every other client that fetches an admin-supplied URL: the
+// dial pins the validated address and redirects are re-checked, so a webhook
+// cannot be pointed (or bounced) at the metadata service or an internal port.
+var handoffWebhookClient = utils.NewSSRFSafeHTTPClient(utils.SSRFSafeHTTPClientConfig{
+	Timeout:      8 * time.Second,
+	MaxRedirects: 3,
+})
 
 // HandoffConfig is the per-channel trigger configuration stored in
 // im_channels.handoff_config. Zero value = feature off.
@@ -125,7 +132,10 @@ func ParseHandoffConfig(raw types.JSON) HandoffConfig {
 
 // ValidateHandoffConfigJSON checks a client-submitted config document. It
 // accepts anything ParseHandoffConfig would clamp, and rejects only what must
-// not be stored at all: non-JSON bodies and non-HTTP webhook URLs.
+// not be stored at all: non-JSON bodies, non-HTTP webhook URLs, and webhook
+// targets that fail the outbound SSRF policy (the server POSTs to this URL
+// on the tenant's behalf, so it gets the same checks as every other
+// admin-configured outbound endpoint).
 func ValidateHandoffConfigJSON(raw types.JSON) error {
 	if len(raw) == 0 {
 		return nil
@@ -138,6 +148,9 @@ func ValidateHandoffConfigJSON(raw types.JSON) error {
 		u, err := url.Parse(webhook)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Errorf("handoff_config.webhook_url must be an http(s) URL")
+		}
+		if err := utils.ValidateURLForSSRF(webhook); err != nil {
+			return fmt.Errorf("%s", utils.FormatSSRFError("handoff_config.webhook_url", webhook, err))
 		}
 	}
 	return nil

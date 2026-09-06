@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +69,7 @@ func TestCodexEndpointResolution(t *testing.T) {
 func TestCodexBuildRequestShape(t *testing.T) {
 	c := newTestCodexChat(t)
 	thinking := true
-	req := c.buildRequest([]Message{
+	req := c.buildRequest(context.Background(), []Message{
 		{Role: "system", Content: "You are a helpful CS agent."},
 		{Role: "user", Content: "What is on the menu?", Images: []string{"data:image/png;base64,AAA"}},
 		{Role: "assistant", Content: "Let me check.", ToolCalls: []ToolCall{{
@@ -347,5 +349,77 @@ func TestCodexIncompleteMapsToLength(t *testing.T) {
 	state.apply(&ev, nil)
 	if state.finishReason != "max_output_tokens" {
 		t.Errorf("finish = %q", state.finishReason)
+	}
+}
+
+// The backend routes by session_id and caches by prompt_cache_key; both must
+// carry the engine's key, and compaction (retention none) must stay out of
+// the session's cache slot.
+func TestCodexBuildRequestCacheRouting(t *testing.T) {
+	c := newTestCodexChat(t)
+	user := []Message{{Role: "user", Content: "hi"}}
+
+	req := c.buildRequest(context.Background(), user, &ChatOptions{PromptCacheKey: "sess-abc"})
+	if req.PromptCacheKey != "sess-abc" || req.sessionKey != "sess-abc" {
+		t.Errorf("engine key: prompt_cache_key=%q session=%q, want sess-abc for both", req.PromptCacheKey, req.sessionKey)
+	}
+	if req.Instructions != codexDefaultInstructions {
+		t.Errorf("instructions = %q, want the default when no system message is present", req.Instructions)
+	}
+
+	ctx := types.WithSessionID(context.Background(), "ctx-session")
+	req = c.buildRequest(ctx, user, nil)
+	if req.PromptCacheKey != "ctx-session" || req.sessionKey != "ctx-session" {
+		t.Errorf("context session: prompt_cache_key=%q session=%q", req.PromptCacheKey, req.sessionKey)
+	}
+
+	req = c.buildRequest(context.Background(), user, &ChatOptions{PromptCacheKey: "sess-abc", CacheRetention: CacheRetentionNone})
+	if req.PromptCacheKey != "" {
+		t.Errorf("retention none must not send prompt_cache_key, got %q", req.PromptCacheKey)
+	}
+	if req.sessionKey != c.sessionID {
+		t.Errorf("retention none session=%q, want the instance id %q", req.sessionKey, c.sessionID)
+	}
+
+	req = c.buildRequest(context.Background(), []Message{{Role: "system", Content: "sys"}, user[0]}, nil)
+	if req.PromptCacheKey != c.sessionID || req.sessionKey != c.sessionID {
+		t.Errorf("no key anywhere: prompt_cache_key=%q session=%q, want instance id", req.PromptCacheKey, req.sessionKey)
+	}
+	if req.Instructions != "sys" {
+		t.Errorf("instructions = %q, want the system message", req.Instructions)
+	}
+}
+
+type failingReader struct{ err error }
+
+func (f failingReader) Read(p []byte) (int, error) { return 0, f.err }
+
+// A stream that breaks mid-way reports what it had assembled, like the
+// OpenAI stream does, so the caller can log the partial call and mark the
+// turn incomplete instead of seeing a bare error.
+func TestCodexStreamReadErrorCarriesPartialState(t *testing.T) {
+	c := newTestCodexChat(t)
+	sse := sseStream(
+		`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"search_kb"}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"q\":"}`,
+	)
+	body := io.MultiReader(strings.NewReader(sse), failingReader{err: errors.New("connection reset by peer")})
+	ch := make(chan types.StreamResponse, 64)
+	go func() {
+		defer close(ch)
+		c.processCodexStream(context.Background(), body, ch)
+	}()
+	var last types.StreamResponse
+	for r := range ch {
+		last = r
+	}
+	if last.ResponseType != types.ResponseTypeError || !last.Done {
+		t.Fatalf("last chunk = %+v, want a terminal error chunk", last)
+	}
+	if last.FinishReason != types.FinishReasonIncomplete {
+		t.Errorf("finish_reason = %q, want %q", last.FinishReason, types.FinishReasonIncomplete)
+	}
+	if len(last.ToolCalls) != 1 || last.ToolCalls[0].Function.Name != "search_kb" || last.ToolCalls[0].ID != "call_1" {
+		t.Errorf("tool calls = %+v, want the partially assembled search_kb call", last.ToolCalls)
 	}
 }

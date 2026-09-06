@@ -10,6 +10,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/models/codexauth"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
 	"github.com/Tencent/WeKnora/internal/models/provider"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
@@ -308,6 +309,9 @@ func (s *modelService) UpdateModelCredentials(
 	if err := s.repo.Update(ctx, existing); err != nil {
 		return nil, err
 	}
+	// The in-process Codex token source still holds the previous pair and
+	// would keep rotating (and writing back) tokens the user just replaced.
+	codexauth.Forget(id)
 	logger.Infof(ctx, "Model credentials updated: id=%s", id)
 	return existing, nil
 }
@@ -356,6 +360,7 @@ func (s *modelService) ClearModelCredential(ctx context.Context, id, field strin
 	if err := s.repo.Update(ctx, existing); err != nil {
 		return err
 	}
+	codexauth.Forget(id)
 	logger.Infof(ctx, "Model credential cleared by user: id=%s field=%s", id, field)
 	return nil
 }
@@ -418,6 +423,7 @@ func (s *modelService) DeleteModel(ctx context.Context, id string) error {
 		return err
 	}
 
+	codexauth.Forget(id)
 	logger.Infof(ctx, "Model deleted successfully: %s", id)
 	return nil
 }

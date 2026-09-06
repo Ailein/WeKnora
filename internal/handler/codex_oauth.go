@@ -6,6 +6,7 @@ import (
 	"html"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +16,15 @@ import (
 	"github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/codexauth"
+	"github.com/Tencent/WeKnora/internal/types"
 )
+
+// codexOAuthListenAddrEnv overrides where the :1455 callback listener binds.
+// The default binds every interface because inside a container the mapped
+// port arrives from the bridge; on a bare-metal host set it to
+// 127.0.0.1:1455 so the unauthenticated callback is not reachable from the
+// network.
+const codexOAuthListenAddrEnv = "CODEX_OAUTH_CALLBACK_ADDR"
 
 // CodexOAuthHandler drives the "Sign in with ChatGPT" flow for the Codex
 // (ChatGPT subscription) model provider.
@@ -41,6 +50,11 @@ type CodexOAuthHandler struct {
 type codexOAuthFlow struct {
 	verifier  string
 	createdAt time.Time
+	// tenantID is the workspace that started the flow; Status/Exchange only
+	// hand the tokens to that workspace. The state is random enough on its
+	// own, but it is logged and travels through the browser, so it must not
+	// be the only thing standing between workspaces.
+	tenantID uint64
 	// status: pending → exchanging → complete | error
 	status string
 	result *codexauth.ExchangeResult
@@ -49,11 +63,30 @@ type codexOAuthFlow struct {
 
 // NewCodexOAuthHandler constructs the handler.
 func NewCodexOAuthHandler() *CodexOAuthHandler {
+	listenAddr := strings.TrimSpace(os.Getenv(codexOAuthListenAddrEnv))
+	if listenAddr == "" {
+		listenAddr = codexauth.CallbackAddr
+	}
 	return &CodexOAuthHandler{
 		flows:      map[string]*codexOAuthFlow{},
 		flowTTL:    15 * time.Minute,
-		listenAddr: codexauth.CallbackAddr,
+		listenAddr: listenAddr,
 	}
+}
+
+// shortState keeps logs from carrying the whole flow state, which is the
+// only secret the unauthenticated callback checks.
+func shortState(state string) string {
+	if len(state) <= 8 {
+		return state
+	}
+	return state[:8] + "…"
+}
+
+// flowTenantID is the workspace on the request; zero when unauthenticated
+// (tests), which then only matches flows started the same way.
+func flowTenantID(c *gin.Context) uint64 {
+	return c.GetUint64(types.TenantIDContextKey.String())
 }
 
 // Start begins an authorization attempt.
@@ -80,6 +113,7 @@ func (h *CodexOAuthHandler) Start(c *gin.Context) {
 		verifier:  flow.Verifier,
 		createdAt: time.Now(),
 		status:    "pending",
+		tenantID:  flowTenantID(c),
 	}
 	listening := h.ensureListenerLocked(ctx)
 	h.mu.Unlock()
@@ -93,7 +127,7 @@ func (h *CodexOAuthHandler) Start(c *gin.Context) {
 		h.mu.Unlock()
 	})
 
-	logger.Infof(ctx, "[CodexOAuth] flow started, state=%s, callback_listening=%v", flow.State, listening)
+	logger.Infof(ctx, "[CodexOAuth] flow started, state=%s, callback_listening=%v", shortState(flow.State), listening)
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
 		"state":              flow.State,
 		"authorization_url":  flow.URL,
@@ -124,7 +158,7 @@ func (h *CodexOAuthHandler) Status(c *gin.Context) {
 	defer h.mu.Unlock()
 	h.sweepLocked()
 	flow, ok := h.flows[state]
-	if !ok {
+	if !ok || flow.tenantID != flowTenantID(c) {
 		c.Error(errors.NewNotFoundError("authorization flow not found or expired"))
 		return
 	}
@@ -185,7 +219,7 @@ func (h *CodexOAuthHandler) Exchange(c *gin.Context) {
 	h.mu.Lock()
 	h.sweepLocked()
 	flow, ok := h.flows[req.State]
-	if !ok {
+	if !ok || flow.tenantID != flowTenantID(c) {
 		h.mu.Unlock()
 		c.Error(errors.NewNotFoundError("authorization flow not found or expired"))
 		return
@@ -212,7 +246,7 @@ func (h *CodexOAuthHandler) Exchange(c *gin.Context) {
 		c.Error(errors.NewBadRequestError("token exchange failed: " + err.Error()))
 		return
 	}
-	logger.Infof(ctx, "[CodexOAuth] manual exchange complete, state=%s", req.State)
+	logger.Infof(ctx, "[CodexOAuth] manual exchange complete, state=%s", shortState(req.State))
 	data := flowResultJSON(result)
 	delete(h.flows, req.State)
 	h.stopListenerIfIdleLocked(ctx)
@@ -368,7 +402,7 @@ func (h *CodexOAuthHandler) callbackHandler() http.Handler {
 		flow.status = "complete"
 		flow.result = result
 		h.mu.Unlock()
-		logger.Infof(ctx, "[CodexOAuth] callback exchange complete, state=%s", state)
+		logger.Infof(ctx, "[CodexOAuth] callback exchange complete, state=%s", shortState(state))
 
 		writeCodexOAuthPage(w, http.StatusOK, true,
 			"授权成功 / Signed in",

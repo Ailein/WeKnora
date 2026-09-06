@@ -165,7 +165,7 @@ func TestPairingPollFallsBackToRedisMirror(t *testing.T) {
 	}
 	p.mirrorStatus(st)
 
-	got, err := p.Poll("wa-pair-remote")
+	got, err := p.Poll(0, "wa-pair-remote")
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestPairingPollFallsBackToRedisMirror(t *testing.T) {
 		t.Errorf("mirror TTL = %s, want (0, %s]", ttl, sessionRetention)
 	}
 
-	if _, err := p.Poll("wa-pair-unknown"); err == nil {
+	if _, err := p.Poll(0, "wa-pair-unknown"); err == nil {
 		t.Error("unknown session should not resolve")
 	}
 }
@@ -195,7 +195,7 @@ func TestPairingPollPrefersLocalSession(t *testing.T) {
 
 	p.mirrorStatus(&PairingStatus{SessionID: "wa-pair-local", Status: PairingStatusExpired})
 
-	got, err := p.Poll("wa-pair-local")
+	got, err := p.Poll(0, "wa-pair-local")
 	if err != nil || got.Status != PairingStatusWait || got.QRPNG == "" {
 		t.Errorf("poll = %+v, err %v (must serve the live local session)", got, err)
 	}
@@ -205,11 +205,11 @@ func TestPairingPollPrefersLocalSession(t *testing.T) {
 func TestPairingWithoutRedis(t *testing.T) {
 	p := NewPairingService(nil, nil)
 	p.mirrorStatus(&PairingStatus{SessionID: "s"})
-	if _, err := p.Poll("missing"); err == nil {
+	if _, err := p.Poll(0, "missing"); err == nil {
 		t.Error("missing session should error without redis")
 	}
 	p.sessions["s-local"] = newWaitSession("s-local")
-	if got, err := p.Poll("s-local"); err != nil || got.Status != PairingStatusWait {
+	if got, err := p.Poll(0, "s-local"); err != nil || got.Status != PairingStatusWait {
 		t.Errorf("local poll = %+v, err %v", got, err)
 	}
 }
@@ -266,5 +266,100 @@ func TestQRPNGDataURL(t *testing.T) {
 	}
 	if len(raw) < 8 || string(raw[:8]) != "\x89PNG\r\n\x1a\n" {
 		t.Error("decoded payload is not a PNG")
+	}
+}
+
+// A pairing session belongs to the workspace that started it: another
+// workspace polling the id must get "not found", both for the live session
+// and for its Redis mirror (which carries the tenant).
+func TestPairingPollIsTenantScoped(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { rc.Close() })
+	p := NewPairingService(nil, rc)
+
+	local := newWaitSession("wa-pair-tenant")
+	local.tenantID = 7
+	p.sessions["wa-pair-tenant"] = local
+	if _, err := p.Poll(7, "wa-pair-tenant"); err != nil {
+		t.Fatalf("owner poll: %v", err)
+	}
+	if _, err := p.Poll(8, "wa-pair-tenant"); !errors.Is(err, ErrPairingNotFound) {
+		t.Fatalf("foreign poll = %v, want ErrPairingNotFound", err)
+	}
+
+	p.mirrorStatus(&PairingStatus{SessionID: "wa-pair-mirrored", TenantID: 7, Status: PairingStatusSuccess, DeviceJID: "1:1@s.whatsapp.net"})
+	if got, err := p.Poll(7, "wa-pair-mirrored"); err != nil || got.DeviceJID == "" {
+		t.Fatalf("owner mirror poll = %+v, err %v", got, err)
+	}
+	if _, err := p.Poll(8, "wa-pair-mirrored"); !errors.Is(err, ErrPairingNotFound) {
+		t.Fatalf("foreign mirror poll = %v, want ErrPairingNotFound", err)
+	}
+}
+
+// Session ids are the only thing a poller presents and a success snapshot
+// carries the device JID, so they must not be predictable.
+func TestPairingSessionIDsAreUnpredictable(t *testing.T) {
+	p := NewPairingService(nil, nil)
+	seen := map[string]bool{}
+	for i := 0; i < 32; i++ {
+		id := p.newPairingSessionID()
+		if len(id) < len("wa-pair-")+32 || seen[id] {
+			t.Fatalf("session id %q is short or repeated", id)
+		}
+		seen[id] = true
+	}
+}
+
+// A completed pairing is the proof a workspace controls the phone; the
+// channel handlers ask PairedBy before letting the workspace bind the JID.
+func TestPairedByRecordsTenant(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { rc.Close() })
+	p := NewPairingService(nil, rc)
+
+	if _, ok := p.PairedBy(context.Background(), "1:1@s.whatsapp.net"); ok {
+		t.Fatal("unknown device must not be attributed")
+	}
+	p.recordPairedDevice("1:1@s.whatsapp.net", 7)
+	if owner, ok := p.PairedBy(context.Background(), "1:1@s.whatsapp.net"); !ok || owner != 7 {
+		t.Fatalf("PairedBy = (%d, %v), want (7, true)", owner, ok)
+	}
+
+	// Another replica sees it through Redis.
+	other := NewPairingService(nil, rc)
+	if owner, ok := other.PairedBy(context.Background(), "1:1@s.whatsapp.net"); !ok || owner != 7 {
+		t.Fatalf("replica PairedBy = (%d, %v), want (7, true)", owner, ok)
+	}
+	if ttl := mr.TTL(redisPairedDevicePrefix + "1:1@s.whatsapp.net"); ttl <= 0 || ttl > pairedDeviceRetention {
+		t.Fatalf("paired-device TTL = %s, want (0, %s]", ttl, pairedDeviceRetention)
+	}
+
+	// Local records age out.
+	p.mu.Lock()
+	p.paired["1:1@s.whatsapp.net"] = pairedDevice{tenantID: 7, at: time.Now().Add(-pairedDeviceRetention - time.Minute)}
+	p.prune()
+	if _, still := p.paired["1:1@s.whatsapp.net"]; still {
+		t.Fatal("expired paired-device record must be pruned")
+	}
+	p.mu.Unlock()
+}
+
+// The success branch of the QR watcher is what records the proof.
+func TestWatchSuccessRecordsPairedDevice(t *testing.T) {
+	p := NewPairingService(nil, nil)
+	sess := newWaitSession("s-record")
+	sess.tenantID = 9
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	qrChan := make(chan whatsmeow.QRChannelItem, 1)
+	qrChan <- whatsmeow.QRChannelSuccess
+	close(qrChan)
+	p.watch(ctx, sess, newOfflineClient(t), qrChan, cancel)
+	// newOfflineClient has no stored ID, so the JID is empty and nothing is
+	// recorded; the path is exercised without a device to attribute.
+	if snap := sess.snapshot(); snap.Status != PairingStatusSuccess || snap.TenantID != 9 {
+		t.Fatalf("snapshot = %+v, want success for tenant 9", snap)
 	}
 }

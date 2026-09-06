@@ -175,6 +175,14 @@ func (s *Service) SetSessionHandling(
 		return nil, fmt.Errorf("update handling mode: %w", err)
 	}
 
+	if mode == HandlingModeHuman {
+		// A turn already queued or running for this peer would answer on top
+		// of the operator; drop it like /stop does. The worker also re-checks
+		// the row before sending, so a cancellation that lands late is still
+		// swallowed instead of turning into a "回答已被取消" notice.
+		s.cancelPendingQAForChannelSession(ctx, cs)
+	}
+
 	// Keep other operators' inboxes in sync: a takeover switch changes the
 	// conversation's pinning even though no message was recorded.
 	s.publishInboxItemUpdate(ctx, cs.SessionID)
@@ -182,6 +190,63 @@ func (s *Service) SetSessionHandling(
 	logger.Infof(ctx, "[IM] Session handling set: platform=%s session=%s mode=%s timeout=%dmin",
 		cs.Platform, cs.SessionID, mode, timeoutMinutes)
 	return handlingFromChannelSession(cs), nil
+}
+
+// cancelPendingQAForChannelSession removes the peer's queued turn and cancels
+// its in-flight one on this instance. Keys are tried with and without the
+// thread scope since the channel's session mode is not on the row.
+func (s *Service) cancelPendingQAForChannelSession(ctx context.Context, cs *ChannelSession) {
+	if cs == nil || cs.IMChannelID == "" {
+		return
+	}
+	keys := []string{makeUserKey(cs.IMChannelID, cs.UserID, cs.ChatID, "")}
+	if cs.ThreadID != "" {
+		keys = append(keys, makeUserKey(cs.IMChannelID, cs.UserID, cs.ChatID, cs.ThreadID))
+	}
+	for _, key := range keys {
+		if s.qaQueue != nil && s.qaQueue.Remove(key) {
+			logger.Infof(ctx, "[IM] Takeover dropped queued QA: key=%s session=%s", key, cs.SessionID)
+		}
+		if raw, loaded := s.inflight.LoadAndDelete(key); loaded {
+			if e, ok := raw.(*inflightEntry); ok && e.cancel != nil {
+				e.cancel()
+				logger.Infof(ctx, "[IM] Takeover cancelled in-flight QA: key=%s session=%s", key, cs.SessionID)
+			}
+		}
+	}
+}
+
+// recheckTakeover re-reads the peer's mapping row at the start of a QA turn
+// and, when an operator holds the conversation, records the message for the
+// console (via takeoverGate) and reports that the turn must not run.
+func (s *Service) recheckTakeover(ctx context.Context, req *qaRequest) bool {
+	if s.db == nil || req == nil || req.channelSession == nil || req.session == nil {
+		return false
+	}
+	var fresh ChannelSession
+	if err := s.db.WithContext(ctx).Where("id = ?", req.channelSession.ID).First(&fresh).Error; err != nil {
+		return false // fail open to bot mode, like an expired takeover does
+	}
+	return s.takeoverGate(ctx, &fresh, req.session, req.msg)
+}
+
+// humanHoldsSession reports whether an unexpired human takeover is currently
+// recorded for the conversation, reading the row rather than any cached copy.
+func (s *Service) humanHoldsSession(ctx context.Context, sessionID string) bool {
+	if s.db == nil || sessionID == "" {
+		return false
+	}
+	var cs ChannelSession
+	if err := s.db.WithContext(ctx).
+		Select("handling_mode", "handling_expires_at").
+		Where("session_id = ? AND deleted_at IS NULL", sessionID).
+		First(&cs).Error; err != nil {
+		return false
+	}
+	if cs.HandlingMode != HandlingModeHuman {
+		return false
+	}
+	return cs.HandlingExpiresAt == nil || time.Now().Before(*cs.HandlingExpiresAt)
 }
 
 // takeoverGate decides whether the bot must stay silent for an inbound

@@ -1656,17 +1656,26 @@ type ModelTestRequest struct {
 // they want to verify. Missing or inaccessible model is treated as a no-op
 // (the connection test will fail downstream with a clearer "missing apiKey"
 // error than we could produce here).
+//
+// On return req.ModelID is kept only when secrets were actually borrowed from
+// a stored model visible to this tenant; buildTestModel copies it onto the
+// temp model so credential rotations made during the test (Codex OAuth
+// refresh tokens are single-use) are written back to that row instead of
+// being lost with the throwaway client. Typed-in secrets or an unknown id
+// clear it, so a test can never write into a row it did not read from.
 func (h *InitializationHandler) fillSecretsFromStoredModel(ctx context.Context, req *ModelTestRequest) {
 	if req == nil || req.ModelID == "" {
 		return
 	}
 	if req.APIKey != "" && req.AppSecret != "" && req.RefreshToken != "" {
+		req.ModelID = ""
 		return
 	}
 	stored, err := h.modelService.GetModelByID(ctx, req.ModelID)
 	if err != nil || stored == nil {
 		logger.Warnf(ctx, "test-connection: stored model %s not found, leaving secrets empty: %v",
 			utils.SanitizeForLog(req.ModelID), err)
+		req.ModelID = ""
 		return
 	}
 	if req.APIKey == "" {
@@ -1709,6 +1718,8 @@ func (h *InitializationHandler) buildTestModel(
 		source = defaultSource
 	}
 	return &types.Model{
+		// Set only when fillSecretsFromStoredModel verified the row (see there).
+		ID:     req.ModelID,
 		Name:   req.ModelName,
 		Type:   modelType,
 		Source: source,

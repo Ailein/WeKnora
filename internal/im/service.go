@@ -1117,6 +1117,9 @@ func (s *Service) reloadChannelFromDB(channelID, reason string) {
 		return
 	}
 	if _, cached, running := s.GetChannelAdapter(channelID); running && sameChannelRuntimeConfig(cached, fresh) {
+		// Nothing the runtime depends on changed, but per-message fields
+		// (name, handoff_config) may have: follow them without a reconnect.
+		s.refreshCachedChannel(channelID, fresh)
 		return
 	}
 
@@ -1359,6 +1362,12 @@ func (s *Service) wsLeaderRenewLoop(ctx context.Context, channelID string) {
 			if !running {
 				return
 			}
+			if sameChannelRuntimeConfig(cached, ch) {
+				// Edits made on another replica that do not touch the
+				// transport (name, handoff_config) still have to reach the
+				// leader's per-message reads.
+				s.refreshCachedChannel(channelID, ch)
+			}
 			if !sameChannelRuntimeConfig(cached, ch) {
 				logger.Infof(context.Background(),
 					"[IM] Channel %s config changed; rebuilding runtime", channelID)
@@ -1590,6 +1599,20 @@ func (s *Service) watchStreamManagerStop(ctx context.Context, sessionID, message
 			}
 			offset = newOffset
 		}
+	}
+}
+
+// refreshCachedChannel swaps the cached channel row for fresh when the
+// runtime itself does not need rebuilding, so fields read per message
+// (Name, HandoffConfig) follow edits that landed on another replica.
+func (s *Service) refreshCachedChannel(channelID string, fresh *IMChannel) {
+	if fresh == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cs, ok := s.channels[channelID]; ok && cs.Channel != nil && cs.Channel.ID == fresh.ID {
+		cs.Channel = fresh
 	}
 }
 
@@ -1982,16 +2005,17 @@ func (s *Service) HandleMessage(ctx context.Context, msg *IncomingMessage, chann
 	userKey := makeUserKey(channelID, msg.UserID, msg.ChatID, threadID)
 
 	req := &qaRequest{
-		ctx:       qaCtx,
-		cancel:    qaCancel,
-		msg:       msg,
-		session:   session,
-		agent:     customAgent,
-		adapter:   adapter,
-		channel:   channel,
-		channelID: channelID,
-		tenant:    tenant,
-		userKey:   userKey,
+		ctx:            qaCtx,
+		cancel:         qaCancel,
+		msg:            msg,
+		session:        session,
+		agent:          customAgent,
+		adapter:        adapter,
+		channel:        channel,
+		channelID:      channelID,
+		channelSession: channelSession,
+		tenant:         tenant,
+		userKey:        userKey,
 	}
 
 	pos, enqueueErr := s.qaQueue.Enqueue(req)
@@ -2075,6 +2099,13 @@ func (s *Service) executeQARequest(req *qaRequest) {
 		return
 	}
 
+	// The takeover gate ran when the message was enqueued; an operator may
+	// have taken the conversation over while it waited in the queue or while
+	// the previous turn was still running. Re-check the row before any work.
+	if s.recheckTakeover(ctx, req) {
+		return
+	}
+
 	// NOTE: StreamManager-based stop detection is started inside handleMessageStream /
 	// runQA after the assistant message is created (that's when we have the
 	// sessionID + messageID needed to poll StreamManager).
@@ -2092,6 +2123,13 @@ func (s *Service) executeQARequest(req *qaRequest) {
 			return
 		}
 		req.msg.Content = transcript
+		// The keyword trigger in HandleMessage saw an empty Content; the
+		// transcript is the first text this message has, so "转人工" spoken
+		// aloud must hand off exactly like it typed.
+		if req.channelSession != nil &&
+			s.handoffGate(ctx, req.channel, req.channelSession, req.session, req.msg, req.adapter) {
+			return
+		}
 		// The title pass in HandleMessage saw an empty Content; retry with the
 		// transcript so a voice-initiated conversation still gets a title.
 		if req.session.Title == "" {
@@ -2153,6 +2191,14 @@ func (s *Service) executeQARequest(req *qaRequest) {
 	if err != nil {
 		logger.Errorf(ctx, "[IM] QA failed: %v, sending fallback reply", err)
 		answer = imQAFailureReply(err)
+	}
+
+	// An operator who took over while QA ran now owns the conversation: the
+	// bot's answer (or its cancellation notice) must not land on top of theirs.
+	if s.humanHoldsSession(ctx, req.session.ID) {
+		logger.Infof(ctx, "[IM] Bot reply dropped: operator took over during QA: platform=%s session=%s",
+			req.msg.Platform, req.session.ID)
+		return
 	}
 
 	outCtx := imOutboundContext(ctx)
@@ -3497,7 +3543,40 @@ func (s *Service) checkDuplicateBot(channel *IMChannel, excludeID string) error 
 		}
 		return fmt.Errorf("check duplicate bot: %w", err)
 	}
+	if existing.TenantID != channel.TenantID {
+		// The identity check is global on purpose (one bot/device = one live
+		// connection), but the other workspace's channel name and id are not
+		// this caller's to see.
+		return fmt.Errorf("duplicate_bot: this bot is already bound to a channel in another workspace; each bot can only be connected to one channel")
+	}
 	return fmt.Errorf("duplicate_bot: this bot is already bound to channel %q (%s); each bot can only be connected to one channel", existing.Name, existing.ID)
+}
+
+// WhatsAppNumberOwner reports which workspace has — or had, soft-deleted rows
+// count — a WhatsApp channel bound to the phone number inside deviceJID. Live
+// rows win over deleted ones. It backs the device-ownership check in the
+// channel handlers: a number that ever belonged to another workspace's
+// channel cannot be claimed with a bare device_jid.
+func (s *Service) WhatsAppNumberOwner(ctx context.Context, deviceJID string) (tenantID uint64, found bool, err error) {
+	probe := &IMChannel{Platform: string(PlatformWhatsApp)}
+	creds, _ := json.Marshal(map[string]string{"device_jid": strings.TrimSpace(deviceJID)})
+	probe.Credentials = types.JSON(creds)
+	key := probe.computeBotIdentity()
+	if key == "" || s.db == nil {
+		return 0, false, nil
+	}
+	var row IMChannel
+	err = s.db.WithContext(ctx).Unscoped().
+		Where("bot_identity = ?", key).
+		Order("CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, updated_at DESC").
+		First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("look up whatsapp number owner: %w", err)
+	}
+	return row.TenantID, true, nil
 }
 
 // ── File message handling ──────────────────────────────────────────────

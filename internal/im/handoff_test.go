@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/utils"
 )
 
 func TestParseHandoffConfigClamps(t *testing.T) {
@@ -57,6 +58,11 @@ func TestParseHandoffConfigClamps(t *testing.T) {
 }
 
 func TestValidateHandoffConfigJSON(t *testing.T) {
+	// The public webhook host is whitelisted so the check does not depend on
+	// this machine's DNS (fake-IP resolvers map public names into 198.18/15).
+	utils.SetSSRFWhitelistFromRaw("qyapi.weixin.qq.com")
+	t.Cleanup(func() { utils.SetSSRFWhitelistFromRaw("") })
+
 	for _, ok := range []string{
 		``, `{}`, `{"enabled":true,"webhook_url":"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x"}`,
 	} {
@@ -66,6 +72,10 @@ func TestValidateHandoffConfigJSON(t *testing.T) {
 	}
 	for _, bad := range []string{
 		`not-json`, `{"webhook_url":"ftp://example.com/x"}`, `{"webhook_url":"just-a-path"}`,
+		// The server POSTs to this URL: private and link-local targets are SSRF.
+		`{"webhook_url":"http://127.0.0.1:6379/"}`,
+		`{"webhook_url":"http://169.254.169.254/latest/meta-data/"}`,
+		`{"webhook_url":"http://10.0.0.5/hook"}`,
 	} {
 		if err := ValidateHandoffConfigJSON(types.JSON(bad)); err == nil {
 			t.Fatalf("config %q unexpectedly accepted", bad)
@@ -96,6 +106,9 @@ type handoffWebhookRecorder struct {
 }
 
 func newHandoffWebhookRecorder() (*handoffWebhookRecorder, *httptest.Server) {
+	// The webhook client is SSRF-safe and would refuse the loopback test
+	// server; whitelist it for the package's tests.
+	utils.SetSSRFWhitelistFromRaw("127.0.0.1")
 	rec := &handoffWebhookRecorder{hit: make(chan struct{}, 8)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := make([]byte, r.ContentLength)

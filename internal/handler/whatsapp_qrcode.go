@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
+	"github.com/Tencent/WeKnora/internal/im/whatsapp"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,8 +25,13 @@ import (
 // @Router       /whatsapp/qrcode [post]
 func (h *IMHandler) WhatsAppStartPairing(c *gin.Context) {
 	ctx := c.Request.Context()
+	tenantID, ok := ctx.Value(types.TenantIDContextKey).(uint64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 
-	status, err := h.whatsappPairing.StartPairing(ctx)
+	status, err := h.whatsappPairing.StartPairing(ctx, tenantID)
 	if err != nil {
 		logger.Errorf(ctx, "[WhatsApp] Failed to start pairing: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start pairing: " + err.Error()})
@@ -51,6 +59,11 @@ func (h *IMHandler) WhatsAppStartPairing(c *gin.Context) {
 // @Router       /whatsapp/qrcode/status [post]
 func (h *IMHandler) WhatsAppPollPairing(c *gin.Context) {
 	ctx := c.Request.Context()
+	tenantID, ok := ctx.Value(types.TenantIDContextKey).(uint64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 
 	var req struct {
 		SessionID string `json:"session_id" binding:"required"`
@@ -60,9 +73,11 @@ func (h *IMHandler) WhatsAppPollPairing(c *gin.Context) {
 		return
 	}
 
-	status, err := h.whatsappPairing.Poll(req.SessionID)
+	status, err := h.whatsappPairing.Poll(tenantID, req.SessionID)
 	if err != nil {
-		logger.Warnf(ctx, "[WhatsApp] Poll pairing failed: %v", err)
+		if !errors.Is(err, whatsapp.ErrPairingNotFound) {
+			logger.Warnf(ctx, "[WhatsApp] Poll pairing failed: %v", err)
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "pairing session not found or expired"})
 		return
 	}

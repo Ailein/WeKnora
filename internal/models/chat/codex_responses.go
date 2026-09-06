@@ -31,8 +31,11 @@ type CodexChat struct {
 	tokenSource   *codexauth.TokenSource
 	customHeaders map[string]string
 	extraConfig   map[string]string
-	// sessionID feeds both the session_id header and prompt_cache_key so
-	// multi-turn calls from one client instance share the server-side cache.
+	// sessionID feeds the session_id header and is the prompt_cache_key
+	// fallback. Client instances are rebuilt per call by the service layer,
+	// so the real cache routing key is the one the engine passes in
+	// ChatOptions.PromptCacheKey (or the session id on the context) —
+	// without it every turn would land on a fresh cache slot.
 	sessionID string
 }
 
@@ -132,19 +135,42 @@ type codexRequest struct {
 	ParallelToolCalls bool             `json:"parallel_tool_calls"`
 	Reasoning         *codexReasoning  `json:"reasoning,omitempty"`
 	PromptCacheKey    string           `json:"prompt_cache_key,omitempty"`
+	// sessionKey is what the session_id header carries for this request: the
+	// prompt cache key when one is sent (the backend routes by session, so
+	// routing and cache key must agree), else the client instance id.
+	sessionKey string
 }
+
+// codexDefaultInstructions is sent when the conversation carries no system
+// message (VLM captioning, connection tests). The reference clients always
+// send instructions; the backend has been seen rejecting requests without.
+const codexDefaultInstructions = "You are a helpful assistant."
 
 var codexReasoningEfforts = map[string]bool{
 	"minimal": true, "low": true, "medium": true, "high": true, "xhigh": true,
 }
 
-func (c *CodexChat) buildRequest(messages []Message, opts *ChatOptions) *codexRequest {
+func (c *CodexChat) buildRequest(ctx context.Context, messages []Message, opts *ChatOptions) *codexRequest {
+	// CacheRetentionNone (compaction summaries) must not occupy the
+	// session's cache slot: no prompt_cache_key, instance-scoped session.
+	cacheKey := ""
+	if resolveCacheRetention(opts) != CacheRetentionNone {
+		cacheKey = promptCacheSessionID(ctx, opts)
+		if cacheKey == "" {
+			cacheKey = c.sessionID
+		}
+	}
+	sessionKey := cacheKey
+	if sessionKey == "" {
+		sessionKey = c.sessionID
+	}
 	req := &codexRequest{
 		Model:             c.modelName,
 		Store:             false, // the Codex backend rejects store:true
 		Stream:            true,  // the backend only streams; Chat() aggregates
 		ParallelToolCalls: true,
-		PromptCacheKey:    c.sessionID,
+		PromptCacheKey:    cacheKey,
+		sessionKey:        sessionKey,
 	}
 
 	var systemParts []string
@@ -198,6 +224,9 @@ func (c *CodexChat) buildRequest(messages []Message, opts *ChatOptions) *codexRe
 		msgIndex++
 	}
 	req.Instructions = strings.Join(systemParts, "\n\n")
+	if req.Instructions == "" {
+		req.Instructions = codexDefaultInstructions
+	}
 
 	if opts != nil {
 		for _, tool := range opts.Tools {
@@ -308,29 +337,34 @@ func userContentParts(msg Message) []codexContentPart {
 
 // doRequest sends the request with a fresh token, force-refreshing once on
 // 401 (the provider can revoke access tokens before their JWT exp).
-func (c *CodexChat) doRequest(ctx context.Context, jsonBody []byte) (*http.Response, error) {
+// sessionID is the session_id header value (see codexRequest.sessionKey).
+func (c *CodexChat) doRequest(ctx context.Context, jsonBody []byte, sessionID string) (*http.Response, error) {
 	endpoint := c.endpoint()
 	if err := secutils.ValidateURLForSSRF(endpoint); err != nil {
 		return nil, fmt.Errorf("endpoint SSRF check failed: %w", err)
 	}
+	if sessionID == "" {
+		sessionID = c.sessionID
+	}
 
-	send := func() (*http.Response, error) {
+	send := func() (*http.Response, string, error) {
 		token, accountID, err := c.tokenSource.Token(ctx)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonBody))
 		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
+			return nil, "", fmt.Errorf("create request: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
-		codexauth.ApplyHeaders(httpReq.Header, token, accountID, c.sessionID)
+		codexauth.ApplyHeaders(httpReq.Header, token, accountID, sessionID)
 		secutils.ApplyCustomHeaders(httpReq, c.customHeaders)
-		return rawHTTPClient.Do(httpReq)
+		resp, err := rawHTTPClient.Do(httpReq)
+		return resp, token, err
 	}
 
-	resp, err := send()
+	resp, usedToken, err := send()
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
@@ -338,10 +372,10 @@ func (c *CodexChat) doRequest(ctx context.Context, jsonBody []byte) (*http.Respo
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
 		logger.Warnf(ctx, "[Codex] 401 from backend, force-refreshing token and retrying once")
-		if err := c.tokenSource.ForceRefresh(ctx); err != nil {
+		if err := c.tokenSource.ForceRefresh(ctx, usedToken); err != nil {
 			return nil, err
 		}
-		resp, err = send()
+		resp, _, err = send()
 		if err != nil {
 			return nil, fmt.Errorf("send request: %w", err)
 		}
@@ -709,14 +743,15 @@ func (c *CodexChat) Chat(ctx context.Context, messages []Message, opts *ChatOpti
 	ctx, cancel := withLLMTimeout(ctx, defaultChatTimeout)
 	defer cancel()
 
-	jsonBody, err := json.Marshal(c.buildRequest(messages, opts))
+	req := c.buildRequest(ctx, messages, opts)
+	jsonBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	logger.Infof(ctx, "[Codex Request] endpoint=%s, model=%s, request:\n%s",
 		c.endpoint(), c.modelName, secutils.CompactImageDataURLForLog(string(jsonBody)))
 
-	resp, err := c.doRequest(ctx, jsonBody)
+	resp, err := c.doRequest(ctx, jsonBody, req.sessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -774,7 +809,8 @@ func (c *CodexChat) Chat(ctx context.Context, messages []Message, opts *ChatOpti
 func (c *CodexChat) ChatStream(ctx context.Context, messages []Message, opts *ChatOptions) (<-chan types.StreamResponse, error) {
 	timeoutCtx, cancel := withLLMTimeout(ctx, defaultStreamTimeout)
 
-	jsonBody, err := json.Marshal(c.buildRequest(messages, opts))
+	req := c.buildRequest(ctx, messages, opts)
+	jsonBody, err := json.Marshal(req)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -782,7 +818,7 @@ func (c *CodexChat) ChatStream(ctx context.Context, messages []Message, opts *Ch
 	logger.Infof(timeoutCtx, "[Codex Stream Request] endpoint=%s, model=%s, request:\n%s",
 		c.endpoint(), c.modelName, secutils.CompactImageDataURLForLog(string(jsonBody)))
 
-	resp, err := c.doRequest(timeoutCtx, jsonBody)
+	resp, err := c.doRequest(timeoutCtx, jsonBody, req.sessionKey)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -820,11 +856,18 @@ func (c *CodexChat) processCodexStream(ctx context.Context, body io.Reader, stre
 			if err == io.EOF {
 				finish()
 			} else {
-				logger.Errorf(ctx, "[Codex] stream read error: %v", err)
+				// Same contract as the OpenAI stream: the partial tool calls
+				// and usage assembled before the break ride along, and the
+				// finish reason marks the response as cut off.
+				logger.Errorf(ctx, "[Codex] stream read error: %v (tool_calls_assembled=%d)",
+					err, len(state.toolByItem))
 				streamChan <- types.StreamResponse{
 					ResponseType: types.ResponseTypeError,
 					Content:      err.Error(),
 					Done:         true,
+					ToolCalls:    state.orderedToolCalls(),
+					Usage:        state.usage,
+					FinishReason: types.FinishReasonIncomplete,
 				}
 			}
 			return

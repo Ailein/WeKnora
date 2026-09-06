@@ -56,6 +56,65 @@ func NewIMHandler(imService *im.Service, db *gorm.DB, redisClient *redis.Client)
 	}
 }
 
+// WhatsApp device ownership errors, mapped to HTTP status by
+// whatsAppDeviceErrorStatus.
+var (
+	errWhatsAppDeviceForeign  = errors.New("this WhatsApp device is bound to another workspace")
+	errWhatsAppDeviceUnpaired = errors.New("device_jid was not paired in this workspace; scan the QR code first")
+)
+
+func whatsAppDeviceErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, errWhatsAppDeviceForeign):
+		return http.StatusConflict
+	case errors.Is(err, errWhatsAppDeviceUnpaired):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// authorizeWhatsAppDevice decides whether tenantID may bind deviceJID. The
+// whatsmeow session store is process-wide and a JID is guessable (phone
+// number plus a small device index), so the credential alone must never be
+// enough to load a session another workspace paired. Accepted proof of
+// control: a pairing this workspace completed recently (the QR code was
+// scanned with the phone), or a channel of this workspace — live or deleted —
+// that already carried the number.
+func (h *IMHandler) authorizeWhatsAppDevice(ctx context.Context, tenantID uint64, deviceJID string) error {
+	deviceJID = strings.TrimSpace(deviceJID)
+	if deviceJID == "" {
+		return nil
+	}
+	if h.whatsappPairing != nil {
+		if owner, ok := h.whatsappPairing.PairedBy(ctx, deviceJID); ok {
+			if owner == tenantID {
+				return nil
+			}
+			return errWhatsAppDeviceForeign
+		}
+	}
+	owner, found, err := h.imService.WhatsAppNumberOwner(ctx, deviceJID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errWhatsAppDeviceUnpaired
+	}
+	if owner != tenantID {
+		return errWhatsAppDeviceForeign
+	}
+	return nil
+}
+
+func deviceJIDFromCredentials(credentials types.JSON) string {
+	creds, err := im.ParseCredentials(credentials)
+	if err != nil {
+		return ""
+	}
+	return im.GetString(creds, "device_jid")
+}
+
 // enforcePlatformFixedModes pins mode/output_mode for platforms whose
 // transport is not user-selectable (wechat: long-poll only; whatsapp:
 // leader-elected websocket with full output). Create and Update both apply
@@ -147,6 +206,13 @@ func (h *IMHandler) CreateIMChannel(c *gin.Context) {
 	}
 	if channel.Credentials == nil {
 		channel.Credentials = types.JSON("{}")
+	}
+	if channel.Platform == "whatsapp" {
+		if err := h.authorizeWhatsAppDevice(c.Request.Context(), tenantID, deviceJIDFromCredentials(channel.Credentials)); err != nil {
+			logger.Warnf(c.Request.Context(), "[IM] WhatsApp device rejected on create: tenant=%d err=%v", tenantID, err)
+			c.JSON(whatsAppDeviceErrorStatus(err), gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	if err := h.imService.CreateChannel(channel); err != nil {
@@ -282,7 +348,17 @@ func (h *IMHandler) UpdateIMChannel(c *gin.Context) {
 		channel.KnowledgeBaseID = *req.KnowledgeBaseID
 	}
 	if req.Credentials != nil {
+		prevDeviceJID := deviceJIDFromCredentials(channel.Credentials)
 		channel.Credentials = im.MergeUpdatedCredentials(channel.Platform, channel.Credentials, req.Credentials)
+		if channel.Platform == "whatsapp" {
+			if jid := deviceJIDFromCredentials(channel.Credentials); jid != prevDeviceJID {
+				if err := h.authorizeWhatsAppDevice(c.Request.Context(), tenantID, jid); err != nil {
+					logger.Warnf(c.Request.Context(), "[IM] WhatsApp device rejected on update: tenant=%d channel=%s err=%v", tenantID, channel.ID, err)
+					c.JSON(whatsAppDeviceErrorStatus(err), gin.H{"error": err.Error()})
+					return
+				}
+			}
+		}
 	}
 	if req.HandoffConfig != nil {
 		channel.HandoffConfig = req.HandoffConfig

@@ -16,9 +16,13 @@ package whatsapp
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -35,7 +39,8 @@ const (
 	pairingTimeout = 5 * time.Minute
 	// firstQRTimeout is how long StartPairing waits for the first code.
 	firstQRTimeout = 20 * time.Second
-	// maxPendingPairings caps concurrent unfinished pairing sessions.
+	// maxPendingPairings caps concurrent unfinished pairing sessions per
+	// workspace, so one workspace cannot hold every pairing slot.
 	maxPendingPairings = 3
 	// sessionRetention keeps finished sessions around for the frontend to
 	// read the terminal status before they are pruned.
@@ -45,7 +50,19 @@ const (
 	redisPairingKeyPrefix = "im:whatsapp:pairing:"
 	// redisPairingOpTimeout bounds each best-effort Redis mirror operation.
 	redisPairingOpTimeout = 3 * time.Second
+
+	// pairedDeviceRetention is how long a completed pairing counts as proof
+	// that the workspace controls the phone; the channel that claims the
+	// device must be saved within it (afterwards a channel of the same
+	// workspace that already carried the number is the other accepted proof).
+	pairedDeviceRetention = 24 * time.Hour
+	// redisPairedDevicePrefix mirrors device_jid → tenant across replicas.
+	redisPairedDevicePrefix = "im:whatsapp:paired:"
 )
+
+// ErrPairingNotFound is returned by Poll for unknown, expired, or foreign
+// (another workspace's) sessions — deliberately the same answer for all three.
+var ErrPairingNotFound = errors.New("pairing session not found or expired")
 
 // Pairing status values.
 const (
@@ -58,6 +75,9 @@ const (
 // PairingStatus is the API-facing snapshot of a pairing session.
 type PairingStatus struct {
 	SessionID string `json:"session_id"`
+	// TenantID is the workspace that started the pairing; only it may poll
+	// the session. Carried by the Redis mirror, never echoed by the API.
+	TenantID  uint64 `json:"tenant_id,omitempty"`
 	Status    string `json:"status"`
 	QRPNG     string `json:"qr_png,omitempty"`
 	DeviceJID string `json:"device_jid,omitempty"`
@@ -68,6 +88,7 @@ type PairingStatus struct {
 type pairingSession struct {
 	mu        sync.Mutex
 	id        string
+	tenantID  uint64
 	status    string
 	qrPNG     string
 	deviceJID string
@@ -88,6 +109,7 @@ func (s *pairingSession) snapshot() *PairingStatus {
 	defer s.mu.Unlock()
 	out := &PairingStatus{
 		SessionID: s.id,
+		TenantID:  s.tenantID,
 		Status:    s.status,
 		DeviceJID: s.deviceJID,
 		Phone:     s.phone,
@@ -137,7 +159,16 @@ type PairingService struct {
 	redis    *redis.Client // nil in single-instance (Lite) mode
 	mu       sync.Mutex
 	sessions map[string]*pairingSession
-	counter  int
+	// paired remembers which workspace completed a pairing for a device JID
+	// (process-local; mirrored to Redis). It is the proof the channel
+	// handlers demand before a workspace may bind that JID.
+	paired  map[string]pairedDevice
+	counter int
+}
+
+type pairedDevice struct {
+	tenantID uint64
+	at       time.Time
 }
 
 func NewPairingService(db *gorm.DB, redisClient *redis.Client) *PairingService {
@@ -145,12 +176,24 @@ func NewPairingService(db *gorm.DB, redisClient *redis.Client) *PairingService {
 		db:       db,
 		redis:    redisClient,
 		sessions: make(map[string]*pairingSession),
+		paired:   make(map[string]pairedDevice),
 	}
 }
 
-// StartPairing spawns a new pairing session and returns once the first QR
-// code is available (or a terminal state was reached before that).
-func (p *PairingService) StartPairing(ctx context.Context) (*PairingStatus, error) {
+// newPairingSessionID returns an unguessable session id: the id is the only
+// thing a poller presents, and a success snapshot carries the device JID.
+func (p *PairingService) newPairingSessionID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		p.counter++
+		return fmt.Sprintf("wa-pair-%d-%d", time.Now().UnixNano(), p.counter)
+	}
+	return "wa-pair-" + hex.EncodeToString(raw[:])
+}
+
+// StartPairing spawns a new pairing session for tenantID and returns once the
+// first QR code is available (or a terminal state was reached before that).
+func (p *PairingService) StartPairing(ctx context.Context, tenantID uint64) (*PairingStatus, error) {
 	container, err := getContainer(p.db)
 	if err != nil {
 		return nil, fmt.Errorf("whatsapp session store: %w", err)
@@ -162,7 +205,7 @@ func (p *PairingService) StartPairing(ctx context.Context) (*PairingStatus, erro
 	p.prune()
 	pending := 0
 	for _, s := range p.sessions {
-		if s.snapshot().Status == PairingStatusWait {
+		if s.tenantID == tenantID && s.snapshot().Status == PairingStatusWait {
 			pending++
 		}
 	}
@@ -171,9 +214,9 @@ func (p *PairingService) StartPairing(ctx context.Context) (*PairingStatus, erro
 		cancel()
 		return nil, fmt.Errorf("too many pending pairing sessions (%d), finish or wait for them to expire", pending)
 	}
-	p.counter++
 	sess := &pairingSession{
-		id:        fmt.Sprintf("wa-pair-%d-%d", time.Now().UnixNano(), p.counter),
+		id:        p.newPairingSessionID(),
+		tenantID:  tenantID,
 		status:    PairingStatusWait,
 		createdAt: time.Now(),
 		firstQR:   make(chan struct{}),
@@ -210,21 +253,77 @@ func (p *PairingService) StartPairing(ctx context.Context) (*PairingStatus, erro
 	return sess.snapshot(), nil
 }
 
-// Poll returns the current status of a pairing session. The live session is
-// process-local; with multiple replicas behind a load balancer the poll may
-// land elsewhere, so fall back to the Redis mirror before reporting not-found.
-func (p *PairingService) Poll(sessionID string) (*PairingStatus, error) {
+// Poll returns the current status of one of tenantID's pairing sessions. The
+// live session is process-local; with multiple replicas behind a load
+// balancer the poll may land elsewhere, so fall back to the Redis mirror
+// before reporting not-found. Another workspace's session is "not found".
+func (p *PairingService) Poll(tenantID uint64, sessionID string) (*PairingStatus, error) {
 	p.mu.Lock()
 	sess, ok := p.sessions[sessionID]
 	p.prune()
 	p.mu.Unlock()
 	if ok {
+		if sess.tenantID != tenantID {
+			return nil, ErrPairingNotFound
+		}
 		return sess.snapshot(), nil
 	}
 	if st := p.lookupMirror(sessionID); st != nil {
+		if st.TenantID != tenantID {
+			return nil, ErrPairingNotFound
+		}
 		return st, nil
 	}
-	return nil, fmt.Errorf("pairing session not found or expired")
+	return nil, ErrPairingNotFound
+}
+
+// recordPairedDevice remembers that tenantID just proved control of the
+// phone behind deviceJID by scanning the code.
+func (p *PairingService) recordPairedDevice(deviceJID string, tenantID uint64) {
+	if deviceJID == "" {
+		return
+	}
+	p.mu.Lock()
+	p.paired[deviceJID] = pairedDevice{tenantID: tenantID, at: time.Now()}
+	p.mu.Unlock()
+	if p.redis == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), redisPairingOpTimeout)
+	defer cancel()
+	if err := p.redis.Set(ctx, redisPairedDevicePrefix+deviceJID,
+		strconv.FormatUint(tenantID, 10), pairedDeviceRetention).Err(); err != nil {
+		logger.Warnf(ctx, "[WhatsApp] Mirror paired device %s to redis failed: %v", deviceJID, err)
+	}
+}
+
+// PairedBy reports which workspace completed a pairing for deviceJID within
+// pairedDeviceRetention, checking this process first and the Redis mirror
+// (other replicas, restarts) second.
+func (p *PairingService) PairedBy(ctx context.Context, deviceJID string) (uint64, bool) {
+	if deviceJID == "" {
+		return 0, false
+	}
+	p.mu.Lock()
+	rec, ok := p.paired[deviceJID]
+	p.mu.Unlock()
+	if ok && time.Since(rec.at) < pairedDeviceRetention {
+		return rec.tenantID, true
+	}
+	if p.redis == nil {
+		return 0, false
+	}
+	rctx, cancel := context.WithTimeout(ctx, redisPairingOpTimeout)
+	defer cancel()
+	raw, err := p.redis.Get(rctx, redisPairedDevicePrefix+deviceJID).Result()
+	if err != nil {
+		return 0, false
+	}
+	tenantID, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return tenantID, true
 }
 
 // mirrorStatus mirrors a session snapshot to Redis. Best-effort: without
@@ -282,7 +381,8 @@ func (p *PairingService) watch(ctx context.Context, sess *pairingSession, client
 				deviceJID = id.String()
 				phone = id.User
 			}
-			logger.Infof(ctx, "[WhatsApp] Pairing succeeded: jid=%s", deviceJID)
+			logger.Infof(ctx, "[WhatsApp] Pairing succeeded: jid=%s tenant=%d", deviceJID, sess.tenantID)
+			p.recordPairedDevice(deviceJID, sess.tenantID)
 			sess.finish(PairingStatusSuccess, deviceJID, phone, "")
 			terminal = true
 			// Let whatsmeow finish its post-pair handshake (key uploads,
@@ -316,7 +416,8 @@ func (p *PairingService) watch(ctx context.Context, sess *pairingSession, client
 	}
 }
 
-// prune drops sessions past retention. Callers must hold p.mu.
+// prune drops sessions past retention and paired-device records past theirs.
+// Callers must hold p.mu.
 func (p *PairingService) prune() {
 	cutoff := time.Now().Add(-sessionRetention)
 	for id, sess := range p.sessions {
@@ -325,6 +426,12 @@ func (p *PairingService) prune() {
 				sess.cancel()
 			}
 			delete(p.sessions, id)
+		}
+	}
+	pairedCutoff := time.Now().Add(-pairedDeviceRetention)
+	for jid, rec := range p.paired {
+		if rec.at.Before(pairedCutoff) {
+			delete(p.paired, jid)
 		}
 	}
 }

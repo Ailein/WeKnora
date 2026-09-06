@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Tencent/WeKnora/internal/logger"
 )
 
 const (
@@ -217,47 +219,138 @@ func Refresh(ctx context.Context, refreshToken string) (*RefreshResult, error) {
 // models — implementations must treat that as a no-op.
 type Persister func(ctx context.Context, modelID, accessToken, refreshToken string) error
 
+// Loader reads the token pair currently stored for a model. A source consults
+// it before spending its own refresh token so a rotation made by another
+// process (a second replica, or one whose persist this process never saw) is
+// adopted instead of colliding with it — the old token is single-use, and a
+// second refresh with it is rejected as reuse. Empty strings mean "nothing
+// stored".
+type Loader func(ctx context.Context, modelID string) (accessToken, refreshToken string, err error)
+
 var (
-	persisterMu sync.RWMutex
-	persister   Persister
+	hooksMu   sync.RWMutex
+	persister Persister
+	loader    Loader
 )
 
 // SetPersister registers the storage write-back used after every refresh.
 // Called once at container assembly time.
 func SetPersister(p Persister) {
-	persisterMu.Lock()
-	defer persisterMu.Unlock()
+	hooksMu.Lock()
+	defer hooksMu.Unlock()
 	persister = p
 }
 
+// SetLoader registers the storage read used before every refresh. Optional;
+// without it a source trusts its in-memory pair only.
+func SetLoader(l Loader) {
+	hooksMu.Lock()
+	defer hooksMu.Unlock()
+	loader = l
+}
+
 func persist(ctx context.Context, modelID, access, refresh string) error {
-	persisterMu.RLock()
+	hooksMu.RLock()
 	p := persister
-	persisterMu.RUnlock()
+	hooksMu.RUnlock()
 	if p == nil || modelID == "" {
 		return nil
 	}
 	return p(ctx, modelID, access, refresh)
 }
 
+func load(ctx context.Context, modelID string) (access, refresh string, ok bool) {
+	hooksMu.RLock()
+	l := loader
+	hooksMu.RUnlock()
+	if l == nil || modelID == "" {
+		return "", "", false
+	}
+	access, refresh, err := l(ctx, modelID)
+	if err != nil || refresh == "" {
+		return "", "", false
+	}
+	return access, refresh, true
+}
+
+// refreshDetachTimeout bounds one detached refresh (token POST with its
+// transport retries, plus the write-back).
+const refreshDetachTimeout = 2 * time.Minute
+
 // TokenSource owns the live token pair for one credential and serializes
 // refreshes. Client instances are rebuilt per call by the service layer, so
 // sources live in a process-wide registry keyed by model id.
 type TokenSource struct {
+	// mu serializes refreshes and is held across the token POST.
 	mu      sync.Mutex
 	modelID string
-	// seedRefresh is the refresh token this source was created from; used to
-	// recognize "same credential" when a caller passes stored values that
-	// predate an in-memory rotation whose persistence failed.
-	seedRefresh string
 
+	// identMu guards the fields below for readers that must not wait on an
+	// in-flight refresh (GetTokenSource runs under the registry lock, and a
+	// refresh can take half a minute behind a flaky proxy). Writers hold mu
+	// and identMu; readers hold either.
+	identMu sync.Mutex
+	// seedAccess/seedRefresh are the tokens this source was created from;
+	// known records every refresh token it has held since. Together they
+	// recognize "same credential" whatever stored generation a caller
+	// presents — the stored pair lags the live one whenever a persist failed.
+	seedAccess   string
+	seedRefresh  string
+	known        map[string]bool
 	accessToken  string
 	refreshToken string
 	claims       *Claims
 
-	// onPersistErr logs are the caller's concern; we keep the last error for
-	// tests/diagnostics only.
+	// lastPersistErr keeps the last write-back failure for tests/diagnostics;
+	// refreshLocked already logs it.
 	lastPersistErr error
+}
+
+func newTokenSource(modelID, accessToken, refreshToken string) *TokenSource {
+	src := &TokenSource{
+		modelID:     modelID,
+		seedAccess:  accessToken,
+		seedRefresh: refreshToken,
+		known:       map[string]bool{},
+	}
+	var claims *Claims
+	if accessToken != "" {
+		if parsed, err := ParseAccessToken(accessToken); err == nil {
+			claims = parsed
+		}
+	}
+	src.setPairLocked(accessToken, refreshToken, claims)
+	return src
+}
+
+// setPairLocked installs a token pair. Caller holds mu (or the source is not
+// published yet).
+func (s *TokenSource) setPairLocked(access, refresh string, claims *Claims) {
+	s.identMu.Lock()
+	defer s.identMu.Unlock()
+	s.accessToken, s.refreshToken, s.claims = access, refresh, claims
+	if refresh != "" {
+		s.known[refresh] = true
+	}
+}
+
+// snapshot returns the live pair without waiting on an in-flight refresh.
+func (s *TokenSource) snapshot() (access, refresh string, claims *Claims) {
+	s.identMu.Lock()
+	defer s.identMu.Unlock()
+	return s.accessToken, s.refreshToken, s.claims
+}
+
+// recognizes reports whether the presented credential is one this source
+// has held: the seed pair, the live pair, or any rotation in between. An
+// access-only credential must match an access token this source knows.
+func (s *TokenSource) recognizes(accessToken, refreshToken string) bool {
+	s.identMu.Lock()
+	defer s.identMu.Unlock()
+	if refreshToken == "" {
+		return accessToken == s.seedAccess || accessToken == s.accessToken
+	}
+	return refreshToken == s.seedRefresh || s.known[refreshToken]
 }
 
 var (
@@ -278,31 +371,55 @@ func sourceKey(modelID, accessToken, refreshToken string) string {
 // GetTokenSource returns the shared source for this credential, creating or
 // replacing it when the caller presents a credential the source has never
 // seen (i.e. the user imported new tokens).
+//
+// A model-keyed source seeded from a credential that an anonymous
+// (unsaved "test connection") source already rotated adopts that rotation:
+// the seed refresh token is spent, so starting from it would fail the first
+// real call with ErrReauthRequired right after a successful test. The adopted
+// pair is persisted immediately so a restart does not resurrect the dead seed.
 func GetTokenSource(modelID, accessToken, refreshToken string) *TokenSource {
+	src, adopted := getOrCreateTokenSource(modelID, accessToken, refreshToken)
+	if adopted {
+		access, refresh, _ := src.snapshot()
+		if err := persist(context.Background(), modelID, access, refresh); err != nil {
+			logger.Warnf(context.Background(),
+				"[Codex] persist adopted token rotation for model %s failed: %v", modelID, err)
+		}
+	}
+	return src
+}
+
+func getOrCreateTokenSource(modelID, accessToken, refreshToken string) (src *TokenSource, adopted bool) {
 	key := sourceKey(modelID, accessToken, refreshToken)
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	if src, ok := registry[key]; ok {
-		src.mu.Lock()
-		known := refreshToken == "" || refreshToken == src.seedRefresh || refreshToken == src.refreshToken
-		src.mu.Unlock()
-		if known {
-			return src
-		}
+	if existing, ok := registry[key]; ok && existing.recognizes(accessToken, refreshToken) {
+		return existing, false
 	}
-	src := &TokenSource{
-		modelID:      modelID,
-		seedRefresh:  refreshToken,
-		accessToken:  accessToken,
-		refreshToken: refreshToken,
-	}
-	if accessToken != "" {
-		if claims, err := ParseAccessToken(accessToken); err == nil {
-			src.claims = claims
+	src = newTokenSource(modelID, accessToken, refreshToken)
+	if modelID != "" && refreshToken != "" {
+		if anon, ok := registry[sourceKey("", accessToken, refreshToken)]; ok && anon.recognizes(accessToken, refreshToken) {
+			if access, refresh, claims := anon.snapshot(); refresh != "" && refresh != refreshToken {
+				src.setPairLocked(access, refresh, claims)
+				adopted = true
+			}
 		}
 	}
 	registry[key] = src
-	return src
+	return src, adopted
+}
+
+// Forget drops the cached source for a model so the next client rebuilds it
+// from the stored credentials. Call whenever the stored pair is replaced or
+// cleared through the credentials API — otherwise the old source keeps using
+// (and on rotation writes back) tokens the user just removed.
+func Forget(modelID string) {
+	if modelID == "" {
+		return
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	delete(registry, "model:"+modelID)
 }
 
 // Token returns a currently valid access token plus its account id,
@@ -321,10 +438,16 @@ func (s *TokenSource) Token(ctx context.Context) (accessToken, accountID string,
 }
 
 // ForceRefresh discards the cached access token (e.g. after an upstream 401)
-// and fetches a new pair.
-func (s *TokenSource) ForceRefresh(ctx context.Context) error {
+// and fetches a new pair. staleAccess is the token the caller was rejected
+// with: when a concurrent caller already rotated past it, that rotation is
+// served as-is instead of spending a second refresh token on the same 401.
+func (s *TokenSource) ForceRefresh(ctx context.Context, staleAccess string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if staleAccess != "" && s.accessToken != "" && s.accessToken != staleAccess &&
+		s.claims != nil && time.Until(s.claims.ExpiresAt) > 0 {
+		return nil
+	}
 	return s.refreshLocked(ctx)
 }
 
@@ -339,29 +462,74 @@ func (s *TokenSource) refreshLocked(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			s.claims = claims
+			s.setPairLocked(s.accessToken, "", claims)
 		}
 		if time.Until(s.claims.ExpiresAt) <= 0 {
 			return fmt.Errorf("Codex access token 已过期且未配置 refresh token，请重新导入 ~/.codex/auth.json")
 		}
 		return nil
 	}
-	res, err := Refresh(ctx, s.refreshToken)
+
+	// The grant and its write-back must outlive the caller. A client that
+	// disconnects mid-refresh would otherwise cancel the POST after the
+	// server already rotated (old token spent, new pair lost) or cancel the
+	// persist after a successful rotation (the row keeps a spent token the
+	// next restart tries to use). Either way a perfectly good credential
+	// ends in ErrReauthRequired. Log values from ctx are kept.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshDetachTimeout)
+	defer cancel()
+
+	// Another process may already hold a newer rotation of this credential.
+	if s.adoptStoredLocked(rctx) && time.Until(s.claims.ExpiresAt) > refreshSkew {
+		return nil
+	}
+	res, err := Refresh(rctx, s.refreshToken)
 	if err != nil {
+		// Our token may have been spent by another replica between the load
+		// above and this POST; its rotation is in the store and usable.
+		if errors.Is(err, ErrReauthRequired) && s.adoptStoredLocked(rctx) && time.Until(s.claims.ExpiresAt) > 0 {
+			return nil
+		}
 		return err
 	}
 	claims, err := ParseAccessToken(res.AccessToken)
 	if err != nil {
 		return fmt.Errorf("refreshed token invalid: %w", err)
 	}
-	s.accessToken = res.AccessToken
-	s.refreshToken = res.RefreshToken
-	s.claims = claims
+	s.setPairLocked(res.AccessToken, res.RefreshToken, claims)
 	// Persist the rotation; a write failure must not fail the call (the
 	// in-memory pair keeps working), but the next process restart would then
-	// need the seedRefresh fallback in GetTokenSource.
-	s.lastPersistErr = persist(ctx, s.modelID, res.AccessToken, res.RefreshToken)
+	// start from the spent stored refresh token and need a re-import. Say so
+	// loudly instead of failing silently later.
+	s.lastPersistErr = persist(rctx, s.modelID, res.AccessToken, res.RefreshToken)
+	if s.lastPersistErr != nil {
+		logger.Warnf(ctx,
+			"[Codex] persist rotated token for model %s failed (in-memory pair still valid; re-import ~/.codex/auth.json if this keeps failing): %v",
+			s.modelID, s.lastPersistErr)
+	}
 	return nil
+}
+
+// adoptStoredLocked replaces the live pair with the stored one when the store
+// holds a newer rotation. Every refresh issues a fresh access token with a
+// later expiry, so the expiry orders rotations: a stored pair that expires no
+// later than the live one is the older generation (this process rotated past
+// it but its persist failed) and is ignored. Caller holds mu.
+func (s *TokenSource) adoptStoredLocked(ctx context.Context) bool {
+	access, refresh, ok := load(ctx, s.modelID)
+	if !ok || refresh == s.refreshToken || s.known[refresh] {
+		return false
+	}
+	claims, err := ParseAccessToken(access)
+	if err != nil {
+		return false
+	}
+	if s.claims != nil && !claims.ExpiresAt.After(s.claims.ExpiresAt) {
+		return false
+	}
+	logger.Infof(ctx, "[Codex] adopting token rotation stored by another process for model %s", s.modelID)
+	s.setPairLocked(access, refresh, claims)
+	return true
 }
 
 // ApplyHeaders sets every header the ChatGPT Codex backend requires.

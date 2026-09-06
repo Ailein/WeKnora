@@ -759,6 +759,17 @@ func (f *limitedFile) WriteAt(p []byte, off int64) (int, error) {
 	return f.File.WriteAt(p, off)
 }
 
+// ReadFrom shadows the embedded *os.File's ReadFrom. whatsmeow streams the
+// ciphertext with io.Copy, which prefers a destination's ReadFrom over its
+// Write — through the promoted os.File method every byte would have landed on
+// disk without ever touching the cap above.
+func (f *limitedFile) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(writerOnly{f}, r)
+}
+
+// writerOnly exposes just Write so io.Copy cannot find a ReadFrom on it.
+type writerOnly struct{ io.Writer }
+
 // tempFileReadCloser deletes the backing temp file on Close.
 type tempFileReadCloser struct {
 	*os.File

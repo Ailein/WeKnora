@@ -485,6 +485,13 @@ func BuildContainer(container *dig.Container) *dig.Container {
 // concurrent admin edits racing a refresh are tolerable (next call refreshes
 // again).
 func registerCodexTokenPersister(db *gorm.DB) {
+	codexauth.SetLoader(func(ctx context.Context, modelID string) (string, string, error) {
+		var m types.Model
+		if err := db.WithContext(ctx).Where("id = ?", modelID).First(&m).Error; err != nil {
+			return "", "", err
+		}
+		return m.Parameters.APIKey, m.Parameters.RefreshToken, nil
+	})
 	codexauth.SetPersister(func(ctx context.Context, modelID, accessToken, refreshToken string) error {
 		var m types.Model
 		if err := db.WithContext(ctx).Where("id = ?", modelID).First(&m).Error; err != nil {

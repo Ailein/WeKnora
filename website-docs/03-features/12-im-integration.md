@@ -85,7 +85,7 @@ imService.RegisterAdapterFactory("whatsapp", whatsapp.NewFactory(db)) // 需要 
 | 微信 `wechat`（iLink 机器人） | **longpoll**（强制；创建时后端强制 `mode=longpoll`、`output_mode=full`） | 否（仅整段输出） | 是 | 否 | `bot_token`、`ilink_bot_id`（均必填） |
 | QQ 机器人 `qqbot` | **websocket**（仅支持） | 否 | 否 | 否 | `app_id`、`client_secret`、`api_base_url`、`gateway_url` |
 | 云之家 `yunzhijia` | **webhook** / websocket（从 `send_msg_url` 推导 WS 地址） | 否 | 是 | 否 | `send_msg_url`（必填）、`secret`、`app_id`、`app_secret`、`allowed_webhook_host_suffix`、`timeout_seconds` |
-| WhatsApp `whatsapp` | **websocket**（强制；whatsmeow 长连接，WhatsApp Web 多设备协议扫码配对，创建时后端强制 `output_mode=full`） | 否（消息高频编辑在非官方客户端上过于显眼） | 是（图片/文档/语音，语音经 ASR 转写后进入 QA） | 否 | `device_jid`（扫码配对后回填，必填）、`allow_from`（私聊白名单，逗号分隔号码，`*` 放行所有，留空拒绝全部私聊；群聊需 @机器人或回复机器人消息） |
+| WhatsApp `whatsapp` | **websocket**（强制；whatsmeow 长连接，WhatsApp Web 多设备协议扫码配对，创建时后端强制 `output_mode=full`） | 否（消息高频编辑在非官方客户端上过于显眼） | 是（图片/文档/语音，语音经 ASR 转写后进入 QA） | 否 | `device_jid`（扫码配对后回填，必填；只能绑定本工作区扫码配对得到的设备，或本工作区渠道曾绑定过的号码，其他工作区的设备会被拒绝）、`allow_from`（私聊白名单，逗号分隔号码，`*` 放行所有，留空拒绝全部私聊；群聊需 @机器人或回复机器人消息） |
 
 ## 渠道模型与配置（internal/im/types.go）
 

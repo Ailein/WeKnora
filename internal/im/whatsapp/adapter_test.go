@@ -1,7 +1,9 @@
 package whatsapp
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"os"
 	"testing"
 
@@ -105,5 +107,40 @@ func TestMediaKeyScopedBySender(t *testing.T) {
 	}
 	if mk("111") != mk("111") {
 		t.Error("key must be deterministic for the same sender")
+	}
+}
+
+// whatsmeow streams the download with io.Copy, which prefers ReadFrom over
+// Write. The cap has to hold on that path too, or the declared-small,
+// actually-huge attachment lands on disk in full.
+func TestLimitedFileCapsIoCopy(t *testing.T) {
+	tmp, err := os.CreateTemp(t.TempDir(), "limited-copy-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tmp.Close()
+	lf := &limitedFile{File: tmp, limit: 8}
+
+	payload := bytes.Repeat([]byte("x"), 1000)
+	if _, err := io.Copy(lf, bytes.NewReader(payload)); !errors.Is(err, errMediaTooLarge) {
+		t.Fatalf("io.Copy past limit: got %v, want errMediaTooLarge", err)
+	}
+	info, err := tmp.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 8 {
+		t.Fatalf("file grew to %d bytes despite the 8-byte cap", info.Size())
+	}
+
+	// Within the cap, io.Copy still works through the same path.
+	small, err := os.CreateTemp(t.TempDir(), "limited-copy-small-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	sf := &limitedFile{File: small, limit: 8}
+	if n, err := io.Copy(sf, bytes.NewReader([]byte("12345678"))); err != nil || n != 8 {
+		t.Fatalf("io.Copy within limit: n=%d err=%v", n, err)
 	}
 }

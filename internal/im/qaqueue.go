@@ -42,6 +42,9 @@ type qaRequest struct {
 	adapter   Adapter
 	channel   *IMChannel
 	channelID string
+	// channelSession is the peer↔session mapping resolved at enqueue time; the
+	// worker re-reads its row to notice a takeover that happened meanwhile.
+	channelSession *ChannelSession
 
 	// tenant is used to resolve provider:// URLs in outbound replies (scheme-aware).
 	tenant *types.Tenant

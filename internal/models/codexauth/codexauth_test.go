@@ -222,7 +222,7 @@ func TestGetTokenSourceReusesAcrossRotation(t *testing.T) {
 	access := makeJWT(t, "acc-3", time.Now().Add(time.Hour))
 	src := GetTokenSource("model-reuse-1", access, "seed-rt")
 	src.mu.Lock()
-	src.refreshToken = "rotated-rt" // simulate an in-memory rotation
+	src.setPairLocked(access, "rotated-rt", src.claims) // simulate an in-memory rotation
 	src.mu.Unlock()
 
 	// Caller passes the stored (stale) seed pair: must reuse, not reset.
@@ -357,5 +357,222 @@ func TestPostTokenFormExhaustsRetries(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "已重试 3 次") {
 		t.Errorf("error should mention retry count, got: %v", err)
+	}
+}
+
+// A "test connection" on an unsaved model refreshes under a credential-keyed
+// source; the model saved afterwards still carries the spent seed pair. The
+// model-keyed source must adopt the rotation and persist it, otherwise the
+// first real call fails with ErrReauthRequired right after a green test.
+func TestGetTokenSourceAdoptsAnonymousRotation(t *testing.T) {
+	rotated := makeJWT(t, "acc-5", time.Now().Add(time.Hour))
+	withTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": rotated, "refresh_token": "rt-5b", "expires_in": 3600,
+		})
+	})
+
+	var mu sync.Mutex
+	persisted := map[string][2]string{}
+	SetPersister(func(ctx context.Context, modelID, access, refresh string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		persisted[modelID] = [2]string{access, refresh}
+		return nil
+	})
+	t.Cleanup(func() { SetPersister(nil) })
+
+	expired := makeJWT(t, "acc-5", time.Now().Add(-time.Minute))
+	anon := GetTokenSource("", expired, "rt-5a")
+	if _, _, err := anon.Token(context.Background()); err != nil {
+		t.Fatalf("anonymous refresh: %v", err)
+	}
+	mu.Lock()
+	if _, ok := persisted[""]; ok {
+		t.Error("anonymous source must not persist")
+	}
+	mu.Unlock()
+
+	// Model saved with the (now spent) seed pair.
+	src := GetTokenSource("model-adopt-1", expired, "rt-5a")
+	if src == anon {
+		t.Fatal("model-keyed source must be its own instance")
+	}
+	src.mu.Lock()
+	access, refresh := src.accessToken, src.refreshToken
+	src.mu.Unlock()
+	if access != rotated || refresh != "rt-5b" {
+		t.Errorf("adopted pair = (%q…, %q), want rotated pair", access[:16], refresh)
+	}
+	mu.Lock()
+	got := persisted["model-adopt-1"]
+	mu.Unlock()
+	if got != [2]string{rotated, "rt-5b"} {
+		t.Errorf("persisted = %v, want adopted rotation", got)
+	}
+
+	// Serving the token must not refresh again: the adopted access token is valid.
+	token, accountID, err := src.Token(context.Background())
+	if err != nil || token != rotated || accountID != "acc-5" {
+		t.Errorf("Token() = (%q…, %q, %v)", token[:16], accountID, err)
+	}
+
+	// A different credential (not seeded from the anonymous source) is left alone.
+	other := GetTokenSource("model-adopt-2", expired, "rt-unrelated")
+	other.mu.Lock()
+	if other.refreshToken != "rt-unrelated" {
+		t.Errorf("unrelated credential adopted rotation: %q", other.refreshToken)
+	}
+	other.mu.Unlock()
+}
+
+// A caller that disconnects mid-refresh must not cancel the grant or its
+// write-back: the old refresh token is spent the moment the server sees it.
+func TestRefreshSurvivesCallerCancellation(t *testing.T) {
+	rotated := makeJWT(t, "acc-6", time.Now().Add(time.Hour))
+	withTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": rotated, "refresh_token": "rt-6b", "expires_in": 3600,
+		})
+	})
+	var mu sync.Mutex
+	persisted := map[string][2]string{}
+	SetPersister(func(ctx context.Context, modelID, access, refresh string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		persisted[modelID] = [2]string{access, refresh}
+		return nil
+	})
+	t.Cleanup(func() { SetPersister(nil) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the caller is already gone
+	expired := makeJWT(t, "acc-6", time.Now().Add(-time.Minute))
+	src := GetTokenSource("model-cancel-1", expired, "rt-6a")
+	token, _, err := src.Token(ctx)
+	if err != nil {
+		t.Fatalf("Token with a cancelled caller context: %v", err)
+	}
+	if token != rotated {
+		t.Errorf("token = %q…, want the rotated access token", token[:16])
+	}
+	mu.Lock()
+	got := persisted["model-cancel-1"]
+	mu.Unlock()
+	if got != [2]string{rotated, "rt-6b"} {
+		t.Errorf("persisted = %v, want the rotation written back despite the cancelled caller", got)
+	}
+}
+
+// A newer rotation stored by another process (second replica) is adopted
+// instead of spending — and colliding on — this process's refresh token.
+func TestTokenSourceAdoptsNewerStoredRotation(t *testing.T) {
+	withTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("refresh endpoint must not be called when the store holds a newer pair")
+	})
+	stored := makeJWT(t, "acc-7", time.Now().Add(2*time.Hour))
+	SetLoader(func(ctx context.Context, modelID string) (string, string, error) {
+		return stored, "rt-7-stored", nil
+	})
+	t.Cleanup(func() { SetLoader(nil) })
+
+	expired := makeJWT(t, "acc-7", time.Now().Add(-time.Minute))
+	src := GetTokenSource("model-adopt-stored-1", expired, "rt-7a")
+	token, accountID, err := src.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != stored || accountID != "acc-7" {
+		t.Errorf("Token() = (%q…, %q), want the stored rotation", token[:16], accountID)
+	}
+	if _, refresh, _ := src.snapshot(); refresh != "rt-7-stored" {
+		t.Errorf("refresh token = %q, want the stored one", refresh)
+	}
+	// The seed stays recognized: a caller still presenting the stale stored
+	// pair (a row read before the other replica wrote) reuses this source.
+	if again := GetTokenSource("model-adopt-stored-1", expired, "rt-7a"); again != src {
+		t.Error("seed credential must keep resolving to the adopted source")
+	}
+}
+
+// A stored pair OLDER than the live one (this process rotated but its persist
+// failed) must be ignored: adopting it would replay a spent token.
+func TestTokenSourceIgnoresOlderStoredRotation(t *testing.T) {
+	rotated := makeJWT(t, "acc-8", time.Now().Add(3*time.Hour))
+	calls := 0
+	withTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": rotated, "refresh_token": "rt-8c", "expires_in": 10800,
+		})
+	})
+	older := makeJWT(t, "acc-8", time.Now().Add(time.Minute)) // generation before the live one
+	SetLoader(func(ctx context.Context, modelID string) (string, string, error) {
+		return older, "rt-8a", nil
+	})
+	t.Cleanup(func() { SetLoader(nil) })
+
+	live := makeJWT(t, "acc-8", time.Now().Add(2*time.Minute)) // inside refreshSkew → refresh due
+	src := GetTokenSource("model-older-stored-1", live, "rt-8b")
+	token, _, err := src.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != rotated || calls != 1 {
+		t.Errorf("Token() = %q… with %d refresh calls, want a fresh rotation from the live token", token[:16], calls)
+	}
+	if _, refresh, _ := src.snapshot(); refresh != "rt-8c" {
+		t.Errorf("refresh token = %q, want rt-8c (older stored pair ignored)", refresh)
+	}
+}
+
+func TestForgetDropsCachedSource(t *testing.T) {
+	access := makeJWT(t, "acc-9", time.Now().Add(time.Hour))
+	src := GetTokenSource("model-forget-1", access, "rt-9a")
+	Forget("model-forget-1")
+	if again := GetTokenSource("model-forget-1", access, "rt-9a"); again == src {
+		t.Error("Forget must drop the cached source")
+	}
+}
+
+// Two callers that get a 401 on the same access token must not both rotate.
+func TestForceRefreshSkipsWhenAlreadyRotated(t *testing.T) {
+	withTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("refresh endpoint must not be called: the source already rotated past the stale token")
+	})
+	fresh := makeJWT(t, "acc-10", time.Now().Add(time.Hour))
+	src := GetTokenSource("model-force-1", fresh, "rt-10b")
+	if err := src.ForceRefresh(context.Background(), "stale-access-token"); err != nil {
+		t.Fatal(err)
+	}
+	if token, _, _ := src.Token(context.Background()); token != fresh {
+		t.Errorf("token = %q…, want the already-rotated one", token[:16])
+	}
+}
+
+// Every refresh token a source has held identifies the same credential, so a
+// stored row lagging one or more failed persists behind still maps to the
+// live pair instead of resurrecting a spent token.
+func TestGetTokenSourceRecognizesEveryHeldRotation(t *testing.T) {
+	access := makeJWT(t, "acc-11", time.Now().Add(time.Hour))
+	src := GetTokenSource("model-known-1", access, "rt-11a")
+	src.mu.Lock()
+	src.setPairLocked(access, "rt-11b", src.claims)
+	src.setPairLocked(access, "rt-11c", src.claims)
+	src.mu.Unlock()
+	for _, rt := range []string{"rt-11a", "rt-11b", "rt-11c"} {
+		if again := GetTokenSource("model-known-1", access, rt); again != src {
+			t.Errorf("rotation %s not recognized as the same credential", rt)
+		}
+	}
+	if again := GetTokenSource("model-known-1", access, ""); again != src {
+		t.Error("a known access token alone must reuse the source")
+	}
+	other := makeJWT(t, "acc-11", time.Now().Add(2*time.Hour))
+	if again := GetTokenSource("model-known-1", other, ""); again == src {
+		t.Error("an unknown access-only credential must replace the source")
 	}
 }
