@@ -38,6 +38,10 @@ import (
 )
 
 const (
+	imNoAnswerFallback  = "抱歉，我暂时无法回答这个问题。"
+	imErrorFallback     = "抱歉，处理您的问题时出现了异常，请稍后再试。"
+	imCancelledFallback = "抱歉，回答已被取消。"
+
 	// dedupTTL is how long processed message IDs are retained.
 	dedupTTL = 5 * time.Minute
 	// dedupCleanupInterval is how often the dedup map is cleaned.
@@ -142,6 +146,42 @@ func holdbackCutoff(chunk string) int {
 // formatIMOutboundAnswer strips thinking/tool blocks and applies IM content cleanup.
 func formatIMOutboundAnswer(ctx context.Context, raw string, tenant *types.Tenant, defaultFileSvc interfaces.FileService, storageResolvers ...interfaces.StorageBackendResolver) string {
 	return cleanIMContent(ctx, FormatIMDisplayContent(raw, StreamDisplayFinal), tenant, defaultFileSvc, storageResolvers...)
+}
+
+// formatIMOutboundAnswerOrFallback guarantees that cleanup cannot turn a
+// non-empty model payload (for example, a think-only response) into an empty IM
+// message. Callers may pass imErrorFallback or imCancelledFallback as raw when
+// QA itself failed or was stopped.
+func formatIMOutboundAnswerOrFallback(
+	ctx context.Context,
+	raw string,
+	tenant *types.Tenant,
+	defaultFileSvc interfaces.FileService,
+	storageResolvers ...interfaces.StorageBackendResolver,
+) string {
+	content := formatIMOutboundAnswer(ctx, raw, tenant, defaultFileSvc, storageResolvers...)
+	if strings.TrimSpace(content) == "" {
+		return imNoAnswerFallback
+	}
+	return content
+}
+
+// imOutboundContext keeps values from ctx but drops cancellation. /stop cancels
+// the QA request; Feishu CardKit calls honor that deadline and would otherwise
+// leave the thinking placeholder on screen.
+func imOutboundContext(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
+}
+
+// imQAFailureReply maps a QA error onto the user-visible IM fallback text.
+func imQAFailureReply(err error) string {
+	if err == nil {
+		return imNoAnswerFallback
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return imCancelledFallback
+	}
+	return imErrorFallback
 }
 
 // cleanIMContent applies all IM-specific content transformations:
@@ -2083,31 +2123,47 @@ func (s *Service) executeQARequest(req *qaRequest) {
 	// Determine output mode from channel config.
 	streamDisabled := req.channel.OutputMode == "full"
 
-	// If the adapter supports streaming and output is not "full", use streaming.
-	if !streamDisabled {
-		if streamer, ok := req.adapter.(StreamSender); ok {
-			if err := s.handleMessageStream(ctx, req.channel, req.msg, req.session, req.agent, kbIDs, attachments, imageURLs, streamer, req.adapter, req.userKey, req.tenant); err != nil {
-				logger.Errorf(ctx, "[IM] Stream QA failed: %v", err)
+	if streamDisabled {
+		if progressSender, ok := req.adapter.(FullOutputProgressSender); ok &&
+			progressSender.SupportsFullOutputProgress() {
+			// Full output still starts the platform stream so users immediately see
+			// its thinking placeholder. No intermediate reasoning/tool content is
+			// sent; the placeholder is replaced only after QA completes.
+			if err := s.handleMessageFullOutput(
+				ctx, req.channel, req.msg, req.session, req.agent, kbIDs, attachments, imageURLs,
+				progressSender, req.adapter, req.userKey, req.tenant,
+			); err != nil {
+				logger.Errorf(ctx, "[IM] Full-output QA failed: %v", err)
 			}
 			return
 		}
+	} else if streamer, ok := req.adapter.(StreamSender); ok {
+		// Stream mode sends intermediate reasoning and answer updates.
+		if err := s.handleMessageStream(
+			ctx, req.channel, req.msg, req.session, req.agent, kbIDs, attachments, imageURLs,
+			streamer, req.adapter, req.userKey, req.tenant,
+		); err != nil {
+			logger.Errorf(ctx, "[IM] Stream QA failed: %v", err)
+		}
+		return
 	}
 
 	// Non-streaming fallback: collect full answer then send.
 	answer, err := s.runQA(ctx, req.session, req.msg.Content, req.agent, kbIDs, attachments, imageURLs, req.userKey, req.msg.Quote)
 	if err != nil {
 		logger.Errorf(ctx, "[IM] QA failed: %v, sending fallback reply", err)
-		answer = "抱歉，处理您的问题时出现了异常，请稍后再试。"
+		answer = imQAFailureReply(err)
 	}
 
-	outbound := formatIMOutboundAnswer(ctx, answer, req.tenant, s.defaultFileSvc, s.storageResolver)
-	outbound, mediaAttachments := extractBotImageAttachments(ctx, outbound, req.msg.Platform)
+	outCtx := imOutboundContext(ctx)
+	outbound := formatIMOutboundAnswerOrFallback(outCtx, answer, req.tenant, s.defaultFileSvc, s.storageResolver)
+	outbound, mediaAttachments := extractBotImageAttachments(outCtx, outbound, req.msg.Platform)
 	reply := &ReplyMessage{
 		Content:     outbound,
 		Attachments: mediaAttachments,
 		IsFinal:     true,
 	}
-	if sendErr := req.adapter.SendReply(ctx, req.msg, reply); sendErr != nil {
+	if sendErr := req.adapter.SendReply(outCtx, req.msg, reply); sendErr != nil {
 		logger.Errorf(ctx, "[IM] Send reply failed: %v", sendErr)
 		return
 	}
@@ -2116,6 +2172,76 @@ func (s *Service) executeQARequest(req *qaRequest) {
 
 	logger.Infof(ctx, "[IM] Reply sent: channel=%s platform=%s user=%s answer_len=%d",
 		req.channelID, req.msg.Platform, req.msg.UserID, len(answer))
+}
+
+// handleMessageFullOutput keeps the channel's full-output semantics while
+// providing immediate progress feedback on adapters that support replaceable
+// stream messages. StartStream creates the platform placeholder; no intermediate
+// updates are sent, and the final answer replaces it exactly once.
+func (s *Service) handleMessageFullOutput(
+	ctx context.Context,
+	channel *IMChannel,
+	msg *IncomingMessage,
+	session *types.Session,
+	customAgent *types.CustomAgent,
+	kbIDs []string,
+	attachments types.MessageAttachments,
+	imageURLs []string,
+	streamer FullOutputProgressSender,
+	adapter Adapter,
+	userKey string,
+	tenant *types.Tenant,
+) error {
+	streamID, err := streamer.StartStream(ctx, msg)
+	if err != nil {
+		logger.Warnf(ctx, "[IM] StartStream failed for full output, falling back to plain reply: %v", err)
+		return s.fallbackNonStream(
+			ctx, channel, msg, session, customAgent, kbIDs, attachments, imageURLs, adapter, userKey, tenant,
+		)
+	}
+
+	answer, qaErr := s.runQA(
+		ctx, session, msg.Content, customAgent, kbIDs, attachments, imageURLs, userKey, msg.Quote,
+	)
+	if qaErr != nil {
+		logger.Errorf(ctx, "[IM] Full-output QA failed: %v, sending fallback reply", qaErr)
+		answer = imQAFailureReply(qaErr)
+	}
+
+	// QA (and /stop) may have cancelled ctx. Platform updates must still run so
+	// the thinking card is replaced instead of hanging forever.
+	outCtx := imOutboundContext(ctx)
+	finalContent := formatIMOutboundAnswerOrFallback(outCtx, answer, tenant, s.defaultFileSvc, s.storageResolver)
+
+	finalizeErr := streamer.FinalizeStream(outCtx, msg, streamID, finalContent)
+	if finalizeErr != nil {
+		logger.Warnf(ctx, "[IM] FinalizeStream failed for full output: %v", finalizeErr)
+	}
+	endErr := streamer.EndStream(outCtx, msg, streamID)
+	if endErr != nil {
+		logger.Warnf(ctx, "[IM] EndStream failed for full output: %v", endErr)
+	}
+
+	// If the placeholder could not be replaced, send a plain final reply so the
+	// user still receives the answer instead of being left on "thinking".
+	var fallbackErr error
+	if finalizeErr != nil {
+		fallbackErr = adapter.SendReply(outCtx, msg, &ReplyMessage{Content: finalContent, IsFinal: true})
+		if fallbackErr != nil {
+			logger.Errorf(ctx, "[IM] Plain reply fallback after full-output finalize failure failed: %v", fallbackErr)
+		}
+	}
+
+	if finalizeErr == nil || fallbackErr == nil {
+		// After the answer went out, so a triggered handoff notice follows it.
+		s.noteBotAnswerOutcome(ctx, channel, session, msg, adapter, qaErr != nil)
+		logger.Infof(
+			ctx, "[IM] Full-output reply sent: platform=%s user=%s answer_len=%d",
+			msg.Platform, msg.UserID, len(answer),
+		)
+		return nil
+	}
+	return errors.Join(finalizeErr, endErr, fallbackErr)
 }
 
 // handleCommand executes a slash-command and sends the result back to the user.
@@ -2712,6 +2838,14 @@ func (s *Service) handleMessageStream(ctx context.Context, channel *IMChannel, m
 		}
 		bufMu.Lock()
 		if seenToolCalls[data.ToolCallID] {
+			if useAgent {
+				upsertIMToolStep(&agentToolSteps, agentToolIdx, data.ToolCallID, func(step *IMToolStep) {
+					if data.Arguments != nil {
+						step.Arguments = data.Arguments
+					}
+				})
+				streamedAny = true
+			}
 			bufMu.Unlock()
 			return nil
 		}
@@ -2905,9 +3039,9 @@ loop:
 	finalDisplay := cleanIMContent(ctx, FormatIMFinalFromParts(parts), tenant, s.defaultFileSvc, s.storageResolver)
 	answerFailed := finalErr != nil || noVisibleContent || finalDisplay == ""
 	if noVisibleContent || finalDisplay == "" {
-		fallback := "抱歉，我暂时无法回答这个问题。"
+		fallback := imNoAnswerFallback
 		if finalErr != nil {
-			fallback = "抱歉，处理您的问题时出现了异常，请稍后再试。"
+			fallback = imQAFailureReply(finalErr)
 		}
 		finalDisplay = fallback
 		if answer == "" {
@@ -2929,7 +3063,7 @@ loop:
 	}
 
 	if answer == "" {
-		answer = "抱歉，我暂时无法回答这个问题。"
+		answer = imNoAnswerFallback
 	}
 
 	assistantMsg.Content = answer
@@ -2951,12 +3085,13 @@ func (s *Service) fallbackNonStream(ctx context.Context, channel *IMChannel, msg
 	answer, err := s.runQA(ctx, session, msg.Content, customAgent, kbIDs, attachments, imageURLs, userKey, msg.Quote)
 	if err != nil {
 		logger.Errorf(ctx, "[IM] QA fallback failed: %v", err)
-		answer = "抱歉，处理您的问题时出现了异常，请稍后再试。"
+		answer = imQAFailureReply(err)
 	}
 
-	outbound := formatIMOutboundAnswer(ctx, answer, tenant, s.defaultFileSvc, s.storageResolver)
-	outbound, mediaAttachments := extractBotImageAttachments(ctx, outbound, msg.Platform)
-	if sendErr := adapter.SendReply(ctx, msg, &ReplyMessage{Content: outbound, Attachments: mediaAttachments, IsFinal: true}); sendErr != nil {
+	outCtx := imOutboundContext(ctx)
+	outbound := formatIMOutboundAnswerOrFallback(outCtx, answer, tenant, s.defaultFileSvc, s.storageResolver)
+	outbound, mediaAttachments := extractBotImageAttachments(outCtx, outbound, msg.Platform)
+	if sendErr := adapter.SendReply(outCtx, msg, &ReplyMessage{Content: outbound, Attachments: mediaAttachments, IsFinal: true}); sendErr != nil {
 		return sendErr
 	}
 	s.noteBotAnswerOutcome(ctx, channel, session, msg, adapter, err != nil)
@@ -3119,7 +3254,7 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 		}
 	case <-ctx.Done():
 		// Mark assistant message as completed to avoid dangling incomplete records
-		assistantMsg.Content = "抱歉，回答已被取消。"
+		assistantMsg.Content = imCancelledFallback
 		assistantMsg.IsCompleted = true
 		// Use a fresh context since the original is cancelled
 		if updateErr := s.messageService.UpdateMessage(context.WithoutCancel(ctx), assistantMsg); updateErr != nil {
@@ -3138,7 +3273,7 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 		return "", qaError
 	}
 	if answer == "" {
-		answer = "抱歉，我暂时无法回答这个问题。"
+		answer = imNoAnswerFallback
 	}
 	if notice := s.buildIMMCPAuthNotice(ctx, authServices); notice != "" {
 		answer = appendIMAuthNotice(answer, notice)
@@ -3189,11 +3324,11 @@ type ChannelWithAgent struct {
 }
 
 // ListChannelsByTenant returns all non-deleted IM channels in the given tenant,
-// joined with custom_agents.name. Built-in agent IDs (whose rows may not exist
-// in custom_agents) produce an empty AgentName — the frontend can substitute a
-// localized "builtin agent" label in that case. Channels whose custom agent was
-// soft-deleted are excluded so overview lists stay consistent after agent removal.
-func (s *Service) ListChannelsByTenant(tenantID uint64) ([]ChannelWithAgent, error) {
+// joined with custom_agents.name. Built-in agent names are re-localized from
+// YAML i18n using ctx (the DB column may be empty or frozen in the writer's
+// language). Channels whose custom agent was soft-deleted are excluded so
+// overview lists stay consistent after agent removal.
+func (s *Service) ListChannelsByTenant(ctx context.Context, tenantID uint64) ([]ChannelWithAgent, error) {
 	builtinIDs := types.GetBuiltinAgentIDs()
 	var rows []ChannelWithAgent
 	q := s.db.Table("im_channels AS c").
@@ -3213,7 +3348,18 @@ func (s *Service) ListChannelsByTenant(tenantID uint64) ([]ChannelWithAgent, err
 	if err != nil {
 		return nil, err
 	}
+	relocalizeBuiltinChannelAgentNames(ctx, rows)
 	return rows, nil
+}
+
+// relocalizeBuiltinChannelAgentNames overlays YAML i18n names onto overview
+// rows for built-in agents. Custom agents are left unchanged.
+func relocalizeBuiltinChannelAgentNames(ctx context.Context, rows []ChannelWithAgent) {
+	for i := range rows {
+		if a := types.GetBuiltinAgentWithContext(ctx, rows[i].AgentID, rows[i].TenantID); a != nil && a.Name != "" {
+			rows[i].AgentName = a.Name
+		}
+	}
 }
 
 // CreateChannel creates a new IM channel and optionally starts it.

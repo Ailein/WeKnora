@@ -19,7 +19,7 @@ var versionedSQLiteTables = []string{
 	"system_settings",
 	"knowledge_processing_spans",
 	"knowledge_tag_relations",
-	"im_quick_replies", // 000091
+	"im_quick_replies", // 000094
 }
 
 // versionedSQLiteColumns maps each existing table to the columns that the
@@ -32,16 +32,17 @@ var versionedSQLiteColumns = map[string][]string{
 	"tenant_invitations": {"token", "accepted_count"},        // 000054
 	"embed_channels":     {"allow_memory"},                   // 000060
 	"mcp_oauth_tokens":   {"principal_type", "principal_id"}, // 000064
-	"im_channels":        {"handoff_config"},                 // 000090
+	"mcp_tool_approvals": {"enabled"},                        // 000091
+	"im_channels":        {"handoff_config"},                 // 000093
 	"im_channel_sessions": {
-		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // 000089
-		"consecutive_failures", "handoff_notified_at", // 000090
-		"peer_name", "operator_unread_count", // 000091
-		"last_message_preview", "last_message_role", "last_message_at", // 000091
+		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // 000092
+		"consecutive_failures", "handoff_notified_at", // 000093
+		"peer_name", "operator_unread_count", // 000094
+		"last_message_preview", "last_message_role", "last_message_at", // 000094
 	},
 }
 
-const expectedSQLiteMigrationVersion = 15
+const expectedSQLiteMigrationVersion = 16
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

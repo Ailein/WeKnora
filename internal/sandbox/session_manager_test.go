@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,18 +82,62 @@ func TestSessionBoundManagerExecuteEnsuresOutputDir(t *testing.T) {
 	require.NoError(t, err)
 
 	client.mu.Lock()
-	paths := append([]string(nil), client.makeDirPaths...)
 	execs := append([]RemoteExecRequest(nil), client.execRequests...)
 	client.mu.Unlock()
-	require.Contains(t, paths, SessionOutputRoot)
 	require.NotEmpty(t, execs)
 	require.True(t, execs[0].Shell)
-	require.Contains(t, execs[0].Command, "chown user:user")
 	require.Contains(t, execs[0].Command, SessionOutputRoot)
+	require.Contains(t, execs[0].Command, SessionInputRoot,
+		"the attachment directory is prepared alongside the artifact one; a "+
+			"snapshot-derived image carries neither")
 	require.Equal(t, DefaultSandboxExecUser, execs[0].User,
 		"chown follows symlinks, so a root-run bootstrap can be aimed at /etc by "+
 			"a session that swaps its artifact directory for a link; running as the "+
 			"sandbox account is what makes that attempt fail")
+}
+
+func TestWorkspaceBootstrapPreservesExistingData(t *testing.T) {
+	cmd := workspaceBootstrapCommand(SessionInputRoot, SessionOutputRoot)
+	require.Contains(t, cmd, "for d in /workspace/input /workspace/output")
+	require.Contains(t, cmd, `mkdir -p -- "$d"`)
+	require.Contains(t, cmd, `[ -L "$d" ]`)
+	for _, destructive := range []string{"mv ", "rm ", "chown ", "chmod "} {
+		require.NotContains(t, cmd, destructive)
+	}
+}
+
+// The agent can delete /workspace/output between turns. Preparing only once
+// per process would leave later writes failing until WeKnora restarted.
+func TestSessionBoundManagerPreparesWorkspaceOnEveryCall(t *testing.T) {
+	client := newFakeRemoteClient(SandboxTypeCube)
+	cfg := DefaultConfig()
+	cfg.CubeTemplate = "tpl-test"
+	mgr, err := NewSessionBoundManager(SessionBoundManagerConfig{
+		Config:          cfg,
+		Client:          client,
+		Store:           NewMemorySessionSandboxBindingStore(),
+		Checker:         &fakeSessionExistenceChecker{exists: true},
+		SkipHealthProbe: true,
+	})
+	require.NoError(t, err)
+
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(10000))
+	for i := 0; i < 3; i++ {
+		_, err := mgr.ExecShellCommand(ctx, "session-a", "echo hi", "", time.Second, nil)
+		require.NoError(t, err)
+	}
+
+	client.mu.Lock()
+	execs := append([]RemoteExecRequest(nil), client.execRequests...)
+	client.mu.Unlock()
+
+	bootstraps := 0
+	for _, exec := range execs {
+		if strings.Contains(exec.Command, SessionInputRoot) {
+			bootstraps++
+		}
+	}
+	require.Equal(t, 3, bootstraps)
 }
 
 // shell_exec carries a command line the model wrote, which makes it the exec
@@ -189,7 +234,7 @@ func TestExecShellCommandKeepsOrdinaryRemoteRequest(t *testing.T) {
 	}, last)
 }
 
-func TestExecShellCommandEmptyWorkDirLeavesRemoteRequestUnset(t *testing.T) {
+func TestExecShellCommandEmptyWorkDirUsesWorkspace(t *testing.T) {
 	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(10000))
 	mgr, client := newSessionManagerExecTestHarness(t)
 
@@ -197,7 +242,7 @@ func TestExecShellCommandEmptyWorkDirLeavesRemoteRequestUnset(t *testing.T) {
 	require.NoError(t, err)
 
 	last := lastExecRequest(t, client)
-	require.Empty(t, last.WorkDir)
+	require.Equal(t, SessionWorkspaceRoot, last.WorkDir)
 	require.Equal(t, DefaultSandboxExecUser, last.User)
 }
 
@@ -273,6 +318,82 @@ func TestSessionBoundManagerEndSessionTurnIgnoresCancel(t *testing.T) {
 	require.False(t, active)
 }
 
+func TestCleanSessionWorkspaceWritePathAcceptsWorkspaceAndRefusesInput(t *testing.T) {
+	got, err := cleanSessionWorkspaceWritePath("/workspace/output/generate_ppt.py")
+	require.NoError(t, err)
+	require.Equal(t, "/workspace/output/generate_ppt.py", got)
+
+	got, err = cleanSessionWorkspaceWritePath("/workspace/scratch/gen.py")
+	require.NoError(t, err)
+	require.Equal(t, "/workspace/scratch/gen.py", got)
+
+	_, err = cleanSessionWorkspaceWritePath("/workspace/input/report.txt")
+	require.Error(t, err)
+	_, err = cleanSessionWorkspaceWritePath("/workspace/output")
+	require.Error(t, err)
+	_, err = cleanSessionWorkspaceWritePath("/etc/passwd")
+	require.Error(t, err)
+	got, err = cleanSessionWorkspaceWritePath("relative.py")
+	require.NoError(t, err)
+	require.Equal(t, "/workspace/relative.py", got)
+}
+
+func TestWriteSessionWorkspaceFileWritesUnderOutput(t *testing.T) {
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(10000))
+	mgr, client := newSessionManagerExecTestHarness(t)
+
+	require.NoError(t, mgr.WriteSessionWorkspaceFile(
+		ctx, "sess-1", "/workspace/output/generate_ppt.py", []byte("print(1)\n"),
+	))
+
+	client.mu.Lock()
+	writes := append([]fakeRemoteWriteFile(nil), client.writeFiles...)
+	execs := len(client.execRequests)
+	client.mu.Unlock()
+	require.Len(t, writes, 1)
+	require.Equal(t, "/workspace/output/generate_ppt.py", writes[0].path)
+	require.Equal(t, []byte("print(1)\n"), writes[0].content)
+	require.Equal(t, 1, execs)
+}
+
+func TestWriteSessionWorkspaceFilesPreparesLayoutOnce(t *testing.T) {
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(10000))
+	mgr, client := newSessionManagerExecTestHarness(t)
+
+	require.NoError(t, mgr.WriteSessionWorkspaceFiles(ctx, "sess-1", []SessionWorkspaceFile{
+		{Path: "/workspace/.skills/host/rev/SKILL.md", Content: []byte("skill")},
+		{Path: "/workspace/.skills/host/rev/scripts/a.py", Content: []byte("a")},
+		{Path: "/workspace/.skills/host/rev/scripts/b.py", Content: []byte("b")},
+	}))
+
+	client.mu.Lock()
+	writes := append([]fakeRemoteWriteFile(nil), client.writeFiles...)
+	execs := append([]RemoteExecRequest(nil), client.execRequests...)
+	dirs := append([]string(nil), client.makeDirPaths...)
+	client.mu.Unlock()
+	require.Len(t, writes, 3)
+	require.Len(t, execs, 1, "workspace bootstrap must run once for the whole tree")
+	require.Contains(t, execs[0].Command, "mkdir -p")
+	require.ElementsMatch(t, []string{
+		"/workspace/.skills/host/rev",
+		"/workspace/.skills/host/rev/scripts",
+	}, dirs)
+}
+
+func TestWriteSessionWorkspaceFileRefusesSessionInput(t *testing.T) {
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(10000))
+	mgr, client := newSessionManagerExecTestHarness(t)
+
+	err := mgr.WriteSessionWorkspaceFile(
+		ctx, "sess-1", "/workspace/input/secret.txt", []byte("nope"),
+	)
+	require.Error(t, err)
+	client.mu.Lock()
+	n := len(client.writeFiles)
+	client.mu.Unlock()
+	require.Zero(t, n)
+}
+
 func TestWriteSessionFileSucceedsWhenInstallDirectoryAlreadyExists(t *testing.T) {
 	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(10000))
 	mgr, client := newSessionManagerExecTestHarness(t)
@@ -292,6 +413,34 @@ func TestWriteSessionFileSucceedsWhenInstallDirectoryAlreadyExists(t *testing.T)
 	client.mu.Unlock()
 	require.Len(t, writes, 1)
 	require.Equal(t, skillDir+"/SKILL.md", writes[0].path)
+}
+
+// The whole feature is inert without this: RemoteNetworkPolicy already existed
+// and both adapters already forwarded it, but nothing ever filled it in.
+func TestBuildSessionCreateRequestCarriesNetworkPolicy(t *testing.T) {
+	denied := false
+	cfg := DefaultConfig()
+	cfg.CubeTemplate = "tpl-1"
+	cfg.E2BTemplate = "tpl-1"
+	cfg.DockerImage = "img-1"
+	cfg.Network = RemoteNetworkPolicy{
+		AllowInternetAccess: &denied,
+		AllowOut:            []string{"api.example.com"},
+		DenyOut:             []string{"0.0.0.0/0"},
+	}
+
+	for _, provider := range []RemoteProvider{
+		SandboxTypeCube, SandboxTypeE2B, SandboxTypeDocker,
+	} {
+		request, err := buildSessionCreateRequest(provider, cfg)
+		require.NoError(t, err, "provider %s", provider)
+		require.NotNil(t, request.Network.AllowInternetAccess, "provider %s", provider)
+		require.False(t, *request.Network.AllowInternetAccess, "provider %s", provider)
+		require.Equal(t, []string{"api.example.com"}, request.Network.AllowOut,
+			"provider %s", provider)
+		require.Equal(t, []string{"0.0.0.0/0"}, request.Network.DenyOut,
+			"provider %s", provider)
+	}
 }
 
 func newSessionManagerExecTestHarness(t *testing.T) (*SessionBoundManager, *fakeRemoteClient) {

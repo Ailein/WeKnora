@@ -260,7 +260,8 @@ func inboxPreview(content string) string {
 // logged and swallowed. Callers on cancellable QA paths still get their note
 // written because the DB work runs on a detached context.
 func (s *Service) noteInboxActivity(ctx context.Context, sessionID string, note inboxNote) {
-	if sessionID == "" || note.Role == "" {
+	// s.db is nil in lightweight test harnesses that exercise the QA path only.
+	if s.db == nil || sessionID == "" || note.Role == "" {
 		return
 	}
 	dbCtx := context.WithoutCancel(ctx)

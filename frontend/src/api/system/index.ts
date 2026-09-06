@@ -398,12 +398,18 @@ export interface CreateSystemUserResponse {
    * be fetched again.
    */
   generated_password?: string
+  /**
+   * True on the 200 retry when the identity already existed. The shared
+   * axios interceptor drops HTTP status, so callers must read this flag
+   * instead of the status code.
+   */
+  idempotent?: boolean
 }
 
 /**
  * Provision a new local user account (SystemAdmin only).
  * Backend returns the unwrapped CreateSystemUserResponse body.
- * Responses 201 on success.
+ * 201 on create, 200 with `idempotent: true` when the identity existed.
  */
 export async function createSystemUser(req: CreateSystemUserRequest): Promise<CreateSystemUserResponse> {
   const response = await post('/api/v1/system/admin/users/create', req)
@@ -766,6 +772,7 @@ export interface SandboxConfig {
   volume_mount?: SandboxVolumeMountConfig
   skill_image?: SandboxSkillImage
   skill_rollout?: 'next_turn' | 'new_session'
+  network?: SandboxNetworkPolicy
   cube?: SandboxCubeConfig
   e2b?: SandboxE2BConfig
   docker?: SandboxDockerConfig
@@ -783,6 +790,51 @@ export interface SandboxDockerConfig {
   runtime?: string
   idle_ttl_seconds?: number
   http_timeout_sec?: number
+}
+
+/** One injected credential header on a Cube L7 rule. */
+export interface SandboxCubeHeaderInject {
+  header: string
+  /** Masked as '***' in responses; send the placeholder back to keep it. */
+  secret?: string
+  /** Defaults to '${SECRET}' server-side. */
+  format?: string
+}
+
+/** One CubeEgress L7 rule. Match fields are AND-ed; methods are OR-ed. */
+export interface SandboxCubeEgressRule {
+  name: string
+  scheme?: string
+  sni?: string
+  host?: string
+  methods?: string[]
+  path?: string
+  /** Absent means allow. A deny rule still needs host or sni. */
+  deny?: boolean
+  audit?: string
+  inject?: SandboxCubeHeaderInject[]
+}
+
+/** One E2B per-host request transform. host must also be in allow_out. */
+export interface SandboxE2BHostRule {
+  host: string
+  /** Values are masked as '***' in responses. */
+  headers?: Record<string, string>
+}
+
+/**
+ * Network policy for every sandbox created from this config. Absent fields
+ * mean egress allowed. Inbound is always credential-required:
+ * allow_public_inbound is accepted then ignored/cleared.
+ */
+export interface SandboxNetworkPolicy {
+  deny_egress_by_default?: boolean
+  /** Ignored. Inbound is always credential-required. */
+  allow_public_inbound?: boolean
+  allow_out?: string[]
+  deny_out?: string[]
+  cube_rules?: SandboxCubeEgressRule[]
+  e2b_host_rules?: SandboxE2BHostRule[]
 }
 
 /** `ok: null` means the probe was not executed in this run. */
@@ -1006,6 +1058,18 @@ export function parseSandboxConflict(err: unknown): SandboxConflict | null {
 
 export type ConfigSkillStatus = 'installing' | 'ready' | 'failed' | 'removing' | 'removed'
 
+/**
+ * One environment variable the skill's installer declared. `is_set` reports
+ * whether a workspace-wide value exists; the value itself is never returned,
+ * so an editor can show that something is stored but not what.
+ */
+export interface ConfigSkillEnv {
+  name: string
+  description?: string
+  required?: boolean
+  is_set: boolean
+}
+
 export interface ConfigSkill {
   id: string
   name: string
@@ -1023,6 +1087,9 @@ export interface ConfigSkill {
   install_message_id?: string
   created_at: string
   updated_at: string
+  // Absent for a skill whose installer declared nothing, which is how the
+  // panel decides whether to offer the environment variable editor at all.
+  envs?: ConfigSkillEnv[]
 }
 
 export interface ConfigSkillInstallEvent {
@@ -1056,10 +1123,40 @@ export function installConfigSkillFromSource(
   }) as unknown as Promise<{ data: { skill_id: string } }>
 }
 
+// Retries an install from the archive the server already stores, so a failure
+// that had nothing to do with the bundle does not send the operator looking
+// for the original zip or registry URL.
+export function reinstallConfigSkill(
+  configId: string,
+  skillId: string,
+): Promise<{ data: { skill_id: string } }> {
+  return post(
+    `/api/v1/sandbox-configs/${configId}/skills/${skillId}/reinstall`,
+    {},
+  ) as unknown as Promise<{ data: { skill_id: string } }>
+}
+
+// Aborts an in-flight install so retry/uninstall become available.
+// After a process restart the row may still say installing with nothing running.
+export function stopConfigSkill(
+  configId: string,
+  skillId: string,
+): Promise<{ data: ConfigSkill }> {
+  return post(
+    `/api/v1/sandbox-configs/${configId}/skills/${skillId}/stop`,
+    {},
+  ) as unknown as Promise<{ data: ConfigSkill }>
+}
+
+/**
+ * Partial update: an absent field is left alone. `envs` names only the
+ * variables to write — an entry with an empty string clears the stored value
+ * while keeping the declaration, and undeclared names are ignored server-side.
+ */
 export function patchConfigSkill(
   configId: string,
   skillId: string,
-  payload: { enabled: boolean },
+  payload: { enabled?: boolean; envs?: Record<string, string> },
 ): Promise<{ data: ConfigSkill }> {
   return patch(`/api/v1/sandbox-configs/${configId}/skills/${skillId}`, payload) as unknown as Promise<{
     data: ConfigSkill

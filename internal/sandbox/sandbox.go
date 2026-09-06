@@ -45,7 +45,12 @@ const (
 	DefaultTimeout     = 60 * time.Second
 	DefaultMemoryLimit = 256 * 1024 * 1024 // 256MB
 	DefaultCPULimit    = 1.0               // 1 CPU core
-	DefaultDockerImage = "wechatopenai/weknora-sandbox:latest"
+	// DefaultDockerImage tracks main rather than latest. The latest tag only
+	// moves when a version is released, so it still carries the image from
+	// before /workspace and its input/output directories were handed to the
+	// sandbox account — a sandbox built from it cannot write its own artifact
+	// directory. Point this back at latest once a release ships that fix.
+	DefaultDockerImage = "wechatopenai/weknora-sandbox:main"
 
 	// DefaultCubeTemplateImage is the same environment with Cube's envd daemon
 	// baked in (target "cube" of docker/Dockerfile.sandbox).
@@ -179,12 +184,18 @@ type ExecuteConfig struct {
 	SessionID string
 
 	// RemoteScriptPath is an absolute path to a script that already exists
-	// inside the sandbox image (installed skills). When set, the executor
-	// skips the upload step and runs it in place. Only paths under a valid
-	// skill directory in SkillsImageRoot are accepted; script-content
-	// validation is skipped because the file is already on the image, so
-	// callers must have vetted the bundle at install time.
+	// inside the sandbox. When set, the executor skips the upload step and
+	// runs it in place. Accepted locations:
+	//   - an installed skill file under SkillsImageRoot (bundle vetted at install)
+	//   - a session-writable file under /workspace, not under /workspace/input,
+	//     which also requires SkillDir so the skill's interpreter is used
 	RemoteScriptPath string
+
+	// SkillDir is the installed skill directory whose venv/node_modules
+	// should run RemoteScriptPath. Required when RemoteScriptPath sits under
+	// /workspace. Image-skill paths derive the directory from the script and
+	// ignore this field.
+	SkillDir string
 }
 
 // ExecuteResult contains the result of script execution
@@ -272,6 +283,12 @@ type Config struct {
 	// EnvVars are additional environment variables to set for the sandbox.
 	EnvVars map[string]string
 
+	// Network is the outbound/inbound policy every sandbox built from this
+	// config is created with. DefaultConfig and ResolveEffectiveConfig fully
+	// specify it: leaving it nil would let adapters use provider defaults,
+	// which expose inbound traffic publicly.
+	Network RemoteNetworkPolicy
+
 	// CubeAPIURL is the base URL of the CubeAPI (E2B-compatible) endpoint.
 	// Only used when Type == SandboxTypeCube. Example: "http://127.0.0.1:33000".
 	CubeAPIURL string
@@ -329,7 +346,8 @@ type Config struct {
 	// E2BSandboxTTL is the E2B-side idle timeout hint.
 	E2BSandboxTTL time.Duration
 
-	// E2BHTTPTimeout bounds each HTTP call to the E2B API.
+	// E2BHTTPTimeout bounds ordinary E2B HTTP calls, including response bodies.
+	// Command streams use their execution timeout instead.
 	E2BHTTPTimeout time.Duration
 }
 
@@ -347,6 +365,7 @@ func DefaultConfig() *Config {
 		MaxCPU:          DefaultCPULimit,
 		CubeSandboxTTL:  DefaultCubeSandboxTTL,
 		CubeHTTPTimeout: DefaultCubeHTTPTimeout,
+		Network:         resolveNetworkPolicy(nil),
 	}
 }
 

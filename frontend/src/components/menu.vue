@@ -150,6 +150,7 @@
                                 <div class="session-list-row session-list-row--flat">
                                     <div class="session-list-row__body">
                                         <SessionSidebarRow :item="subitem" :batch-mode="batchMode"
+                                            :running="Boolean(sessionActivityEntries[subitem.id])"
                                             :active-path="currentSecondpath" :selected-ids="batchSelectedIds"
                                             :menu-options="buildSessionMenuOptions(subitem)"
                                             @navigate="gotopage(subitem.path)"
@@ -249,6 +250,7 @@ import {
 } from './sessionSidebarSourceFilter';
 import { logout as logoutApi } from '@/api/auth';
 import { useMenuStore } from '@/stores/menu';
+import { useSessionActivityStore } from '@/stores/sessionActivity';
 import { useAuthStore } from '@/stores/auth';
 import { useDeploymentCapabilitiesStore } from '@/stores/deploymentCapabilities';
 import { useOrganizationStore } from '@/stores/organization';
@@ -294,6 +296,9 @@ const platformLogo = (p: string): string => (p ? PLATFORM_LOGO[p] || '' : '');
 
 const { t } = useI18n();
 const usemenuStore = useMenuStore();
+const sessionActivity = useSessionActivityStore();
+const { entries: sessionActivityEntries } = storeToRefs(sessionActivity);
+let sessionActivityTimer: ReturnType<typeof setInterval> | undefined;
 const authStore = useAuthStore();
 const deploymentCapabilities = useDeploymentCapabilitiesStore();
 const orgStore = useOrganizationStore();
@@ -963,6 +968,7 @@ const loadSessionOriginMeta = async () => {
 const handleSessionMutation = (event: Event) => {
     const detail = (event as CustomEvent<SessionMutationDetail>).detail;
     if (!detail?.sessionId) return;
+    if (detail.removed || detail.messagesCleared) sessionActivity.update(detail.sessionId, false);
     if (detail.patch) {
         updateSessionInBuckets(detail.sessionId, {
             ...detail.patch,
@@ -979,6 +985,7 @@ const handleSessionMutation = (event: Event) => {
 };
 
 onMounted(async () => {
+    sessionActivityTimer = setInterval(() => { void sessionActivity.refresh(); }, 5000);
     const routeName = typeof route.name === 'string' ? route.name : (route.name ? String(route.name) : '')
     currentpath.value = routeName;
     if (route.params.chatid) {
@@ -1016,6 +1023,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+    clearInterval(sessionActivityTimer);
+    sessionActivity.clear();
     window.removeEventListener(SESSION_MUTATION_EVENT, handleSessionMutation);
 });
 
@@ -1683,6 +1692,11 @@ const onDragHandleMouseDown = (e: MouseEvent) => {
             flex: 1 1 auto;
             min-width: 0;
             overflow: hidden;
+        }
+
+        .session-running-indicator {
+            flex: 0 0 16px;
+            flex-shrink: 0;
         }
 
         .submenu_title-text {

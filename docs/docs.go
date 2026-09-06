@@ -825,7 +825,7 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "修改当前用户的登录密码。新密码须满足 8–32 位且同时包含字母与数字；成功后所有会话被撤销，需重新登录。",
+                "description": "修改当前用户的登录密码。新密码须满足 8–32 位且同时包含字母与数字；开启复杂密码后还需包含大小写与特殊字符。成功后所有会话被撤销，需重新登录。",
                 "consumes": [
                     "application/json"
                 ],
@@ -874,7 +874,7 @@ const docTemplate = `{
         },
         "/auth/config": {
             "get": {
-                "description": "返回当前部署的注册模式等公开认证配置，供前端决定是否展示注册入口",
+                "description": "返回当前部署的注册模式与密码复杂度开关，供前端决定是否展示注册入口以及密码校验规则",
                 "consumes": [
                     "application/json"
                 ],
@@ -1370,7 +1370,7 @@ const docTemplate = `{
                         "Bearer": []
                     }
                 ],
-                "description": "为当前用户在目标空间重新签发访问令牌；要求该用户在目标空间存在 active 成员关系",
+                "description": "为当前用户在目标空间重新签发访问令牌；要求该用户在目标空间存在 active 成员关系（跨租户超级用户除外）。\n成功换签会把目标空间写入「最近活跃租户」偏好，下次登录与 refresh 都落在该空间（refresh JWT 不含 tenant_id）。\n该偏好是账号级的：一次换签会改变该用户所有设备的下次登录/refresh 落点。偏好写入失败则整次换签失败，不会发出新 token。",
                 "consumes": [
                     "application/json"
                 ],
@@ -1414,7 +1414,7 @@ const docTemplate = `{
                         }
                     },
                     "403": {
-                        "description": "无该空间成员关系",
+                        "description": "无该空间成员关系或偏好写入失败",
                         "schema": {
                             "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
                         }
@@ -9499,7 +9499,7 @@ const docTemplate = `{
                         "ApiKeyAuth": []
                     }
                 ],
-                "description": "为指定 MCP 服务下的某个工具设置/更新审批要求",
+                "description": "为指定 MCP 服务下的某个工具更新启用状态和/或人工审批要求。至少提供 require_approval 或 enabled 之一；省略的字段保持原值。",
                 "consumes": [
                     "application/json"
                 ],
@@ -9509,7 +9509,7 @@ const docTemplate = `{
                 "tags": [
                     "MCP服务"
                 ],
-                "summary": "设置 MCP 工具人工审批策略",
+                "summary": "设置 MCP 工具策略",
                 "parameters": [
                     {
                         "type": "string",
@@ -9526,7 +9526,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "{require_approval: bool}",
+                        "description": "{require_approval?: bool, enabled?: bool}",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -9599,6 +9599,219 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
+                        }
+                    }
+                }
+            }
+        },
+        "/me/env-vars": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "List every sandbox config of this workspace with the caller's own config-wide variables and the credentials its skills declared, each reporting whether it is unset, filled in workspace-wide, or filled in by the caller. Values are never returned.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Me"
+                ],
+                "summary": "List my environment variables",
+                "responses": {
+                    "200": {
+                        "description": "One group per sandbox config",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/me/env-vars/sandbox": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Store the caller's own value for one variable on a sandbox config. It is injected into every skill script and shell command this caller's turns run on that config.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Me"
+                ],
+                "summary": "Set one of my sandbox environment variables",
+                "parameters": [
+                    {
+                        "description": "Sandbox config, variable name and value",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handler.meEnvVarRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Stored",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Remove the caller's own value for one variable on a sandbox config.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Me"
+                ],
+                "summary": "Delete one of my sandbox environment variables",
+                "parameters": [
+                    {
+                        "description": "Sandbox config and variable name",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handler.meEnvVarRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Deleted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not set",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
+                        }
+                    }
+                }
+            }
+        },
+        "/me/env-vars/skill": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Store the caller's own value for one variable the skill declared. It overrides the workspace-wide value for this caller only, and is injected only into executions that name this skill.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Me"
+                ],
+                "summary": "Set one of my skill credentials",
+                "parameters": [
+                    {
+                        "description": "Skill, variable name and value",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handler.meEnvVarRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Stored",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Remove the caller's own value. The workspace-wide value, if there is one, applies again afterwards.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Me"
+                ],
+                "summary": "Delete one of my skill credentials",
+                "parameters": [
+                    {
+                        "description": "Skill and variable name",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handler.meEnvVarRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Deleted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not set",
                         "schema": {
                             "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
                         }
@@ -10893,6 +11106,12 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "模型仍被知识库、智能体或长期记忆引用",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
                         }
                     },
                     "404": {
@@ -12341,7 +12560,7 @@ const docTemplate = `{
                         "ApiKeyAuth": []
                     }
                 ],
-                "description": "Install a skill onto this sandbox config's image. Send a zip\nas multipart form field \"file\", or JSON {\"source\":\"...\"} to\npull a public skill. source is one of: \"@owner/slug\" or a\nslash-free slug (ClawHub), a github.com / gitlab.com /\nskills.sh / clawhub / skillhub URL, or a direct zip/SKILL.md\nURL. Bare \"owner/slug\" is rejected as ambiguous. The source\nmust be readable anonymously. The install boots a sandbox and\nruns for minutes, so the request is only accepted; follow it\nvia the install-events stream.",
+                "description": "Install a skill onto this sandbox config's image. Send a zip\nas multipart form field \"file\", or JSON {\"source\":\"...\"} to\npull a public skill. source is one of: \"@owner/slug\" or a\nslash-free slug (ClawHub), a github.com / gitlab.com /\nskills.sh / clawhub / skillhub URL, a ClawHub skills-sh\ncatalog page (https://clawhub.ai/skills-sh/owner/repo/slug),\na skills-sh:owner/repo/slug locator, or a direct zip/SKILL.md\nURL. Bare \"owner/slug\" is rejected as ambiguous. The source\nmust be readable anonymously. The install boots a sandbox and\nruns for minutes, so the request is only accepted; follow it\nvia the install-events stream.",
                 "consumes": [
                     "application/json",
                     "multipart/form-data"
@@ -12528,7 +12747,7 @@ const docTemplate = `{
                         "ApiKeyAuth": []
                     }
                 ],
-                "description": "Show or hide an installed skill. The files stay in the image either way; removal is a separate flow.",
+                "description": "Show or hide an installed skill and set the workspace-wide values of the environment variables it declared. Either field may be sent, or both. The files stay in the image either way; removal is a separate flow.",
                 "consumes": [
                     "application/json"
                 ],
@@ -12762,6 +12981,134 @@ const docTemplate = `{
                         "description": "SSE stream of progress events",
                         "schema": {
                             "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Skill not found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
+                        }
+                    }
+                }
+            }
+        },
+        "/sandbox-configs/{id}/skills/{skillId}/reinstall": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Retry a failed install from the stored archive; does not re-upload.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SandboxConfig"
+                ],
+                "summary": "Retry a skill install",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Sandbox config ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Skill ID",
+                        "name": "skillId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Reinstall accepted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "The stored archive is gone",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Skill not found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
+                        }
+                    }
+                }
+            }
+        },
+        "/sandbox-configs/{id}/skills/{skillId}/stop": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Abort an in-flight install so the operator can retry or uninstall. After a process restart the row may still say installing with no live process; this rewrites it immediately instead of waiting for the stuck-run reaper. Removal is not stopped.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SandboxConfig"
+                ],
+                "summary": "Stop a skill install",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Sandbox config ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Skill ID",
+                        "name": "skillId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Stopped skill",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Skill is not installing",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_errors.AppError"
                         }
                     },
                     "401": {
@@ -13743,7 +14090,7 @@ const docTemplate = `{
                         "ApiKeyAuth": []
                     }
                 ],
-                "description": "返回指定沙盒配置镜像内、智能体实际能调用的已安装技能（ready 且启用）。不传 sandbox_config_id 时列表为空。",
+                "description": "返回指定沙箱配置镜像内、智能体实际能调用的已安装技能（ready 且启用）。不传 sandbox_config_id 时列表为空。",
                 "consumes": [
                     "application/json"
                 ],
@@ -13753,7 +14100,7 @@ const docTemplate = `{
                 "tags": [
                     "Skills"
                 ],
-                "summary": "获取当前沙盒配置上可执行的 Skills",
+                "summary": "获取当前沙箱配置上可执行的 Skills",
                 "parameters": [
                     {
                         "type": "string",
@@ -13765,6 +14112,184 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "Skills列表",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/skills/catalog": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Returns every skill definition in this workspace and which sandbox configs it is installed on.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Skills"
+                ],
+                "summary": "List workspace skills",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Records a skill without installing it. Send a zip as multipart field \"file\", or JSON {\"source\":\"...\"}.",
+                "consumes": [
+                    "application/json",
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Skills"
+                ],
+                "summary": "Add a skill to the workspace catalog",
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/skills/catalog/{id}": {
+            "delete": {
+                "description": "Refused while any sandbox still has an installation of this skill.",
+                "tags": [
+                    "Skills"
+                ],
+                "summary": "Delete a catalog skill",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Catalog skill ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/skills/catalog/{id}/files": {
+            "get": {
+                "description": "Lists the stored catalog bundle. Files belong to the skill definition, not a sandbox install.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Skills"
+                ],
+                "summary": "List files of a catalog skill",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Catalog skill ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/skills/catalog/{id}/files/content": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Skills"
+                ],
+                "summary": "Read one file of a catalog skill",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Catalog skill ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Skill-root-relative file path",
+                        "name": "path",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/skills/catalog/{id}/install": {
+            "post": {
+                "description": "Runs the existing snapshot install onto each named sandbox config.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Skills"
+                ],
+                "summary": "Install a catalog skill onto sandboxes",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Catalog skill ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -17546,7 +18071,8 @@ const docTemplate = `{
                 2102,
                 2103,
                 2200,
-                2201
+                2201,
+                2300
             ],
             "x-enum-varnames": [
                 "ErrBadRequest",
@@ -17571,7 +18097,8 @@ const docTemplate = `{
                 "ErrAgentInvalidMaxIterations",
                 "ErrAgentInvalidTemperature",
                 "ErrVectorStoreBindingInvalid",
-                "ErrVectorStoreUnavailable"
+                "ErrVectorStoreUnavailable",
+                "ErrModelInUse"
             ]
         },
         "github_com_Tencent_WeKnora_internal_infrastructure_chunker.DocProfile": {
@@ -18075,7 +18602,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "parser_engine_rules": {
-                    "description": "ParserEngineRules configures which parser engine to use for each file type.\nWhen empty, the builtin engine is used for all types.",
+                    "description": "ParserEngineRules configures which parser engine to use for each file type.\nWhen empty, DefaultParserEngine is used (builtin/simple routing, except\ntypes that only a specific engine can parse: ppt/pptx fall back to\nmarkitdown). A linked anydoc binding is preferred for every type it\nconverts.",
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.ParserEngineRule"
@@ -18230,6 +18757,61 @@ const docTemplate = `{
             "properties": {
                 "weknoracloud": {
                     "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.WeKnoraCloudCredentials"
+                }
+            }
+        },
+        "github_com_Tencent_WeKnora_internal_types.CubeEgressRule": {
+            "type": "object",
+            "properties": {
+                "audit": {
+                    "description": "Audit is none | metadata | full. Empty uses the server default.",
+                    "type": "string"
+                },
+                "deny": {
+                    "description": "Deny inverts the action, which defaults to allow. A deny rule still\nneeds Host or SNI: the target has to reach CubeEgress for it to answer\nwith a request-level 403 instead of the network layer dropping it.",
+                    "type": "boolean"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "inject": {
+                    "description": "Inject adds credential headers on allowed HTTPS requests.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.CubeHeaderInject"
+                    }
+                },
+                "methods": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "scheme": {
+                    "type": "string"
+                },
+                "sni": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_Tencent_WeKnora_internal_types.CubeHeaderInject": {
+            "type": "object",
+            "properties": {
+                "format": {
+                    "type": "string"
+                },
+                "header": {
+                    "type": "string"
+                },
+                "secret": {
+                    "type": "string"
                 }
             }
         },
@@ -18408,11 +18990,11 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "max_completion_tokens": {
-                    "description": "Maximum completion tokens (only for normal mode)",
+                    "description": "Maximum completion tokens. Quick-answer uses this for the RAG answer.\nSmart-reasoning ReAct rounds send this value as-is (zero becomes\nDefaultMaxCompletionTokens at call time: 4096, or 24576 with a sandbox).",
                     "type": "integer"
                 },
                 "max_iterations": {
-                    "description": "===== Agent Mode Settings =====\nMaximum iterations for ReAct loop (only for agent type)",
+                    "description": "===== Agent Mode Settings =====\nMaximum iterations for the ReAct loop. Zero is unset (filled with a\ndefault). A negative value is unlimited: the loop runs until the model\nstops, the user cancels, or another guard fires.",
                     "type": "integer"
                 },
                 "mcp_auth_wait_timeout": {
@@ -18494,7 +19076,7 @@ const docTemplate = `{
                     }
                 },
                 "skills_selection_mode": {
-                    "description": "===== Skills Settings (only for smart-reasoning mode) =====\nSkills selection mode: \"all\" = all preloaded skills, \"selected\" = specific skills, \"none\" = no skills",
+                    "description": "===== Skills Settings (only for smart-reasoning mode) =====\nSkills selection mode: \"all\" = all installed skills, \"selected\" = specific skills, \"none\" = no skills",
                     "type": "string"
                 },
                 "supported_file_types": {
@@ -18696,6 +19278,21 @@ const docTemplate = `{
                 },
                 "tls_cert_path": {
                     "description": "TLSCertPath is a directory on the WeKnora host containing ca.pem,\ncert.pem and key.pem. Required when Host is a TCP endpoint.",
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_Tencent_WeKnora_internal_types.E2BHostRule": {
+            "type": "object",
+            "properties": {
+                "headers": {
+                    "description": "Headers values are credentials and are encrypted at rest; names stay\nreadable so operators can see which headers are injected.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "host": {
                     "type": "string"
                 }
             }
@@ -20361,6 +20958,10 @@ const docTemplate = `{
                 "base_url": {
                     "type": "string"
                 },
+                "context_window": {
+                    "description": "ContextWindow is the model's total context window in tokens and\nMaxOutputTokens the most it emits in one response. Both are provider\nfacts the agent cannot discover but has to act on: the context window is\nwhat decides when conversation history gets compacted, and assuming a\nwindow larger than the real one means compaction never fires and the\nprovider rejects the request mid-conversation instead. 0 means unknown,\nwhich falls back to DefaultMaxContextTokens.",
+                    "type": "integer"
+                },
                 "custom_headers": {
                     "description": "CustomHeaders 允许在调用远程模型 API 时附加自定义 HTTP 请求头，\n用途类似 Python OpenAI SDK 的 extra_headers 参数，\n常见场景包括透传企业网关鉴权信息、追踪 ID、路由标识等。\n保留字段（Authorization、api-key、Content-Type、Accept 等）会在运行期被忽略以避免破坏签名/鉴权流程。",
                     "type": "object",
@@ -20383,6 +20984,9 @@ const docTemplate = `{
                 },
                 "max_concurrency": {
                     "description": "MaxConcurrency caps concurrent in-flight BACKGROUND (ingestion /\nenrichment) calls to THIS specific model, keyed by model ID and shared\nacross all replicas. 0 (the default) means \"fall back to the\nprocess-wide model.max_concurrency\". Interactive user-facing calls are\nnever gated. Only chat / vlm / embedding honour this (see limiter.Gate).",
+                    "type": "integer"
+                },
+                "max_output_tokens": {
                     "type": "integer"
                 },
                 "parameter_size": {
@@ -20420,6 +21024,7 @@ const docTemplate = `{
                 "siliconflow",
                 "jina",
                 "openrouter",
+                "litellm",
                 "requesty",
                 "nvidia",
                 "novita",
@@ -20432,6 +21037,7 @@ const docTemplate = `{
                 "ModelSourceGemini": "Gemini model",
                 "ModelSourceHunyuan": "Hunyuan model",
                 "ModelSourceJina": "Jina AI model",
+                "ModelSourceLiteLLM": "LiteLLM proxy model",
                 "ModelSourceLocal": "Local model",
                 "ModelSourceMimo": "Mimo model",
                 "ModelSourceMinimax": "Minimax mode",
@@ -20460,6 +21066,7 @@ const docTemplate = `{
                 "SiliconFlow model",
                 "Jina AI model",
                 "OpenRouter model",
+                "LiteLLM proxy model",
                 "Requesty model",
                 "NVIDIA model",
                 "Novita AI model",
@@ -20480,6 +21087,7 @@ const docTemplate = `{
                 "ModelSourceSiliconFlow",
                 "ModelSourceJina",
                 "ModelSourceOpenRouter",
+                "ModelSourceLiteLLM",
                 "ModelSourceRequesty",
                 "ModelSourceNvidia",
                 "ModelSourceNovita",
@@ -21371,6 +21979,47 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_Tencent_WeKnora_internal_types.SandboxNetworkPolicy": {
+            "type": "object",
+            "properties": {
+                "allow_out": {
+                    "description": "AllowOut accepts IPv4, IPv4 CIDR, a DNS name, or a single-label\nwildcard such as \"*.example.com\". Domain entries are only meaningful\ntogether with a deny-all; see ValidateSandboxNetworkPolicy.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "allow_public_inbound": {
+                    "description": "AllowPublicInbound is accepted on the wire for old payloads and then\ncleared. Inbound is always credential-required; a true value has no\nruntime effect.",
+                    "type": "boolean"
+                },
+                "cube_rules": {
+                    "description": "CubeRules are validated whenever present and consumed only by the Cube\nprovider adapter.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.CubeEgressRule"
+                    }
+                },
+                "deny_egress_by_default": {
+                    "description": "DenyEgressByDefault installs a 0.0.0.0/0 deny-all, after which only\nAllowOut (and L7 rule targets) can reach the network. false allows\npublic egress, which is what skill installs need.",
+                    "type": "boolean"
+                },
+                "deny_out": {
+                    "description": "DenyOut accepts IPv4 and IPv4 CIDR only. Neither provider can deny a\ndomain: denial is a pure longest-prefix match on the destination IP.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "e2b_host_rules": {
+                    "description": "E2BHostRules are validated whenever present and consumed only by the E2B\nprovider adapter.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.E2BHostRule"
+                    }
+                }
+            }
+        },
         "github_com_Tencent_WeKnora_internal_types.SearchParams": {
             "type": "object",
             "properties": {
@@ -22206,6 +22855,14 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "network": {
+                    "description": "Network is the outbound/inbound network policy applied to every sandbox\ncreated from this config — chat sessions, skill installs and deep\nconnectivity probes alike. nil and the zero value mean the same thing:\noutbound egress allowed, inbound public access closed.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.SandboxNetworkPolicy"
+                        }
+                    ]
+                },
                 "sandbox_type": {
                     "description": "SandboxType is cube, e2b, or docker; disabled is the hidden policy row.",
                     "type": "string"
@@ -22221,14 +22878,6 @@ const docTemplate = `{
                 "skill_rollout": {
                     "description": "SkillRollout decides whether sessions that already hold a sandbox of\nthis config rebuild after a skill install or removal. Empty and\nSkillRolloutNextTurn rebuild on the next chat turn. SkillRolloutNewSession\nleaves those sandboxes on the previous image; only sessions that start\nafterwards boot the new snapshot.",
                     "type": "string"
-                },
-                "skill_image": {
-                    "description": "SkillImage points at the snapshot that carries this config's installed\nskills. Empty means \"use the base template\". Written only by the skill\ninstall/remove path: MergeSandboxConfigForUpdate ignores client values\nso a settings-form save cannot wipe or plant the pointer.",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.SkillImageConfig"
-                        }
-                    ]
                 },
                 "volume_mount": {
                     "description": "VolumeMount configures an optional shared volume mounted into every\nsandbox created for this tenant. Currently used for tenant-installed\nskills, but the configuration itself is skill-agnostic and can serve\nany volume-mount use case (shared datasets, pre-installed toolchains,\netc.).",
@@ -22534,7 +23183,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "last_active_tenant_id": {
-                    "description": "LastActiveTenantID remembers the last workspace the user actively\nswitched into, so a fresh login (new device, cleared browser, new\nrefresh token) lands them back in that workspace instead of always\nbouncing to their home workspace. Login / RefreshToken validate that\nthe workspace still exists and the user still has an active membership\n(or CanAccessAllTenants) before honouring this preference; an\ninvalid pointer is best-effort cleared and the user falls back to\nhome.\n\nnil  = no preference (use user.TenantID, i.e. home)\n*0   = \"clear preference\" sentinel for the partial-update endpoint\n       (UpdateUserPreferences turns this into nil). Otherwise treat\n       a stored *0 the same as nil.\n*N   = preferred workspace id.",
+                    "description": "LastActiveTenantID remembers the last workspace the user actively\nswitched into, so a fresh login (new device, cleared browser, new\nrefresh token) lands them back in that workspace instead of always\nbouncing to their home workspace. Written by the SPA's preferences\nPUT and by service-level SwitchTenant (including when switching\nhome, which stores the home ID). Login / RefreshToken validate that\nthe workspace still exists and the user still has an active membership\n(or CanAccessAllTenants) before honouring this preference; an\ninvalid pointer is best-effort cleared and the user falls back to\nhome. Refresh JWT claims have no tenant_id, so RefreshToken\nre-resolves from this field.\n\nnil  = no preference (use user.TenantID, i.e. home)\n*0   = \"clear preference\" sentinel for the partial-update endpoint\n       (UpdateUserPreferences turns this into nil). Otherwise treat\n       a stored *0 the same as nil.\n*N   = preferred workspace id.",
                     "type": "integer"
                 },
                 "oidc_only_login": {
@@ -23628,6 +24277,10 @@ const docTemplate = `{
                 "generated_password": {
                     "description": "GeneratedPassword is the plaintext password when the server\nauto-generated one. Absent when the caller supplied the password.",
                     "type": "string"
+                },
+                "idempotent": {
+                    "description": "Idempotent is true when the identity already existed (HTTP 200).\nThe SPA axios interceptor discards status codes, so this flag is\nthe body-level signal that nothing was created or changed.",
+                    "type": "boolean"
                 },
                 "user": {
                     "$ref": "#/definitions/github_com_Tencent_WeKnora_internal_types.UserInfo"
@@ -25130,6 +25783,24 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handler.meEnvVarRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "sandbox_config_id": {
+                    "type": "string"
+                },
+                "skill_id": {
+                    "type": "string"
+                },
+                "value": {
+                    "description": "Value is unused by the delete endpoints. Clearing a value is a delete\nrather than a write of \"\", so a member always has one unambiguous way to\nrevoke.",
+                    "type": "string"
+                }
+            }
+        },
         "internal_handler.platformAPIKeyCreateRequest": {
             "type": "object",
             "properties": {
@@ -25203,8 +25874,15 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "enabled": {
-                    "description": "Enabled is a pointer because its absence is a bad request rather than a\nrequest to disable the skill.",
+                    "description": "Enabled is a pointer because its absence is not a request to disable the\nskill; a body may carry envs instead.",
                     "type": "boolean"
+                },
+                "envs": {
+                    "description": "Envs is a pointer to a map because \"sent an empty object\" and \"did not\nmention envs\" are different requests: the first clears what it names,\nthe second must leave every stored value alone.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -25212,7 +25890,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "source": {
-                    "description": "Source is exactly one of: \"@owner/slug\" or a slash-free slug (ClawHub),\na github.com / gitlab.com / skills.sh / clawhub / skillhub page URL, or\na direct zip/SKILL.md URL. Bare \"owner/slug\" is rejected: it is both a\nClawHub id and a GitHub repo. The fetch carries no credential.",
+                    "description": "Source is exactly one of: \"@owner/slug\" or a slash-free slug (ClawHub),\na github.com / gitlab.com / skills.sh / clawhub / skillhub page URL, a\nClawHub skills-sh catalog page or \"skills-sh:owner/repo/slug\" locator, or\na direct zip/SKILL.md URL. Bare \"owner/slug\" is rejected: it is both a\nClawHub id and a GitHub repo. The fetch carries no credential.",
                     "type": "string"
                 }
             }
@@ -25268,7 +25946,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "last_active_tenant_id": {
-                    "description": "LastActiveTenantID lets the SPA persist \"after a fresh login,\ndrop me back into this workspace\" across devices. Send a positive\nworkspace id to set / replace, or 0 to clear. Membership is validated\nat next login, not here. Nil = field omitted from the PATCH and\nstays untouched.",
+                    "description": "LastActiveTenantID lets clients persist \"after a fresh login,\ndrop me back into this workspace\" across devices. The SPA sends\nthis after every tenant switch; POST /auth/switch-tenant records\nthe same preference server-side. Send a positive workspace id to\nset / replace, or 0 to clear. Membership is validated at next\nlogin, not here. Nil = field omitted from the PATCH and stays\nuntouched.",
                     "type": "integer"
                 }
             }

@@ -38,10 +38,10 @@ func TestInstallerAgentGetsTheRootShellWithTheSkillsRoot(t *testing.T) {
 		installShell: privileged,
 	}
 	config := &types.AgentConfig{}
-	config.EnableSkillInstallMode(types.BuiltinSkillInstallerID)
+	config.EnableSkillInstallMode(types.BuiltinSkillInstallerID, sandbox.SkillsImageRoot+"/pptx")
 	registry := tools.NewToolRegistry()
 
-	registerSandboxShellTool(context.Background(), registry, mgr, config)
+	(&agentService{}).registerSandboxShellTool(context.Background(), registry, mgr, config)
 
 	result, err := registry.ExecuteTool(installShellToolContext(), tools.ToolShellExec,
 		json.RawMessage(`{"command":"pip install -r requirements.txt","work_dir":"`+
@@ -67,7 +67,7 @@ func TestOrdinaryAgentKeepsTheUnprivilegedShell(t *testing.T) {
 	}
 	registry := tools.NewToolRegistry()
 
-	registerSandboxShellTool(context.Background(), registry, mgr, &types.AgentConfig{})
+	(&agentService{}).registerSandboxShellTool(context.Background(), registry, mgr, &types.AgentConfig{})
 
 	rejected, err := registry.ExecuteTool(installShellToolContext(), tools.ToolShellExec,
 		json.RawMessage(`{"command":"pip install x","work_dir":"`+sandbox.SkillsImageRoot+`/sk-1"}`))
@@ -86,7 +86,7 @@ func TestOrdinaryAgentKeepsTheUnprivilegedShell(t *testing.T) {
 func TestInstallModeIsRefusedToEveryAgentButTheInstaller(t *testing.T) {
 	config := &types.AgentConfig{}
 
-	config.EnableSkillInstallMode("some-tenant-agent")
+	config.EnableSkillInstallMode("some-tenant-agent", sandbox.SkillsImageRoot+"/pptx")
 
 	require.False(t, config.SkillInstallMode())
 }
@@ -105,7 +105,7 @@ func TestInstallerAgentConfigTurnsOnInstallMode(t *testing.T) {
 	config := installerAgentConfig(&types.CustomAgent{
 		ID:     types.BuiltinSkillInstallerID,
 		Config: types.CustomAgentConfig{AllowedTools: []string{tools.ToolShellExec}},
-	}, "cfg-1")
+	}, "cfg-1", sandbox.SkillsImageRoot+"/pptx")
 
 	require.True(t, config.SkillInstallMode())
 	require.Equal(t, "none", config.MCPSelectionMode,
@@ -126,7 +126,7 @@ func TestInstallerAgentConfigKeepsMCPOffWhenThePlatformYAMLEnablesIt(t *testing.
 			WebSearchEnabled: true,
 			MemoryEnabled:    &memoryOn,
 		},
-	}, "cfg-1")
+	}, "cfg-1", sandbox.SkillsImageRoot+"/pptx")
 
 	require.Equal(t, "none", config.MCPSelectionMode)
 	require.False(t, config.WebSearchEnabled)
@@ -138,7 +138,7 @@ func TestInstallerAgentConfigLeavesInstallModeOffForAnotherAgent(t *testing.T) {
 	config := installerAgentConfig(&types.CustomAgent{
 		ID:     "agent-42",
 		Config: types.CustomAgentConfig{AllowedTools: []string{tools.ToolShellExec}},
-	}, "cfg-1")
+	}, "cfg-1", sandbox.SkillsImageRoot+"/pptx")
 
 	require.False(t, config.SkillInstallMode())
 }
