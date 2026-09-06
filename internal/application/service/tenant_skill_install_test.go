@@ -749,6 +749,7 @@ func TestInstallSkillRecoversFromNameConflict(t *testing.T) {
 	fx.skillRepo.createErr = errors.New("UNIQUE constraint failed: tenant_skills.sandbox_config_id")
 	archive := zipBundle(t, map[string]string{"SKILL.md": validSkillMD})
 
+	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
@@ -818,6 +819,7 @@ func TestInstallSkillRetriesAFailedSkillWithTheSameArchive(t *testing.T) {
 		Status: types.SkillStatusFailed, Error: "previous run died",
 	}))
 
+	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
@@ -914,6 +916,7 @@ func TestInstallSkillReinstallsWhenTheLiveImageNoLongerCarriesTheSkill(t *testin
 	// The pointer was cleared (last-skill removal, or a rebuild from base).
 	// The row still says ready, but the files are gone from every new session.
 
+	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
@@ -992,6 +995,7 @@ func TestInstallSkillRetriesAStaleInFlightInstallOfTheSameArchive(t *testing.T) 
 		Error: "the previous process is gone",
 	}))
 
+	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
@@ -1139,6 +1143,7 @@ func TestInstallSkillDoesNotSkipARemovalOfTheSameArchive(t *testing.T) {
 		Status: types.SkillStatusRemoving,
 	}))
 
+	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
@@ -2108,6 +2113,40 @@ func newInstallFixture(t *testing.T) *installFixture {
 
 func (f *installFixture) record(event string) {
 	f.events = append(f.events, event)
+}
+
+// holdInstallRun parks the background run at the moment the installer engine
+// would start, so a test can read the row exactly as the operator who just got
+// the 202 would. InstallSkill answers before the run has done anything, and
+// with an instant fake sandbox the run would otherwise race the assertion to
+// "ready" on a loaded machine. The run is released when the test ends and
+// waited for, so nothing it writes lands after the fixture is gone.
+func (f *installFixture) holdInstallRun(skillID string) {
+	f.t.Helper()
+	reached := make(chan struct{})
+	gate := make(chan struct{})
+	var reachedOnce sync.Once
+	f.beforeExecute = func() {
+		reachedOnce.Do(func() { close(reached) })
+		<-gate
+	}
+	f.t.Cleanup(func() {
+		close(gate)
+		select {
+		case <-reached:
+		case <-time.After(10 * time.Second):
+			f.t.Errorf("the background install of %s never reached the installer engine", skillID)
+			return
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for f.svc.lookupSkillRun(7, "cfg-1", skillID) != nil {
+			if time.Now().After(deadline) {
+				f.t.Errorf("the background install of %s did not finish", skillID)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
 }
 
 // nextLoadCheckExit returns the code for this verification pass, repeating the
