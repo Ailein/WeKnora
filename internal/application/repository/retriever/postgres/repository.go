@@ -800,9 +800,13 @@ func generatedQuestionExclusionClause(kbIDs []string) clause.Expression {
 		placeholders[i] = "?"
 		vars[i] = id
 	}
+	// pg_search 0.25 rejects NOT over the column-to-column comparisons in the
+	// predicate ("Unsupported query shape") but runs IS NOT TRUE as a heap
+	// filter. IS NOT TRUE also keeps rows whose predicate is NULL, as
+	// IsGeneratedQuestionSource does.
 	return clause.Expr{
 		SQL: fmt.Sprintf(
-			"NOT (knowledge_base_id IN (%s) AND %s)",
+			"(knowledge_base_id IN (%s) AND %s) IS NOT TRUE",
 			strings.Join(placeholders, ", "),
 			types.GeneratedQuestionRowPredicate(""),
 		),
