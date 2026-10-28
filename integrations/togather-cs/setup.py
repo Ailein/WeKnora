@@ -289,6 +289,7 @@ def main():
     ap.add_argument("--base-url", default="http://localhost:8080")
     ap.add_argument("--workspace", default=str(Path.home() / ".openclaw/workspace-togather-cs"))
     ap.add_argument("--chat-model", default="", help="chat model id (default: auto-pick)")
+    ap.add_argument("--embedding-model", default="", help="embedding model id (default: auto-pick)")
     args = ap.parse_args()
 
     api = Api(args.base_url, args.api_key)
@@ -306,9 +307,10 @@ def main():
         return cands[0]["id"] if cands else ""
 
     chat_model = args.chat_model or pick("KnowledgeQA", "minimax") or pick("KnowledgeQA")
-    # Prefer a local (Ollama) embedder when present — the WeKnoraCloud free
-    # tier runs out of quota quickly on a 72-document import.
-    embedding_model = pick("Embedding", "bge") or pick("Embedding")
+    # Prefer the third-party Zhipu Embedding-3: the WeKnoraCloud free tier runs
+    # out of quota on a 72-document import, and a local Ollama embedder makes
+    # retrieval depend on the host keeping Ollama running.
+    embedding_model = args.embedding_model or pick("Embedding", "embedding-3") or pick("Embedding")
     rerank_model = pick("Rerank")
     asr_model = pick("ASR")  # optional: enables WhatsApp voice-note transcription
     if not (chat_model and embedding_model):

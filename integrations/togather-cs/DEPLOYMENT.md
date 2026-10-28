@@ -27,16 +27,8 @@
 3. openclaw 的知识源目录 `~/.openclaw/workspace-togather-cs/`（setup.py 从这里读 md 文件；正式服务器上已有）。
 4. 模型：
    - **对话模型**：MiniMax（或任意 OpenAI 兼容 API），需要 API key。
-   - **Embedding：强烈建议本地 Ollama + bge-m3**。WeKnoraCloud 免费 embedding 额度撑不住 72 个文档（本地部署时就是因“额度已用完”全量失败后切换的）。bge-m3 多语种，覆盖 EN/中文/BM。
+   - **Embedding：用第三方 API，推荐智谱 Embedding-3**（2048 维，多语种，覆盖 EN/中文/BM）。WeKnoraCloud 免费 embedding 额度撑不住 72 个文档；本地 Ollama（bge-m3）已弃用——检索要依赖宿主机 Ollama 常驻，宿主重启没拉起来时语义检索整体失效。
    - Rerank：可选（有就配）。
-
-安装 Ollama 并拉模型（宿主机上）：
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh   # Linux；mac 用 brew install ollama
-ollama pull bge-m3
-curl -s http://127.0.0.1:11434/api/version      # 确认服务在 11434
-```
 
 ## 部署步骤
 
@@ -45,13 +37,10 @@ curl -s http://127.0.0.1:11434/api/version      # 确认服务在 11434
 在 repo 根目录 `cp .env.example .env` 后，重点确认这几项（其余按常规 WeKnora 部署）：
 
 ```bash
-# app 容器访问宿主机 Ollama（compose 的 app 服务已带 extra_hosts host-gateway）
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-
 # SSRF 白名单：逗号分隔。必须包含 togather-distance（MCP 容器主机名），
 # 以及所有模型 API 域名——尤其当服务器 DNS 走 fake-ip 代理（Clash 等）时，
 # 外部域名会被解析到 198.18.x.x 保留段而被 SSRF 校验拦截。
-SSRF_WHITELIST=togather-distance,api.minimaxi.com
+SSRF_WHITELIST=togather-distance,api.minimaxi.com,open.bigmodel.cn
 ```
 
 ### 2. 启动服务
@@ -74,7 +63,7 @@ docker exec WeKnora-app sh -c "wget -q -O- --post-data='{\"jsonrpc\":\"2.0\",\"i
 浏览器打开 WeKnora → 注册/登录 → 设置 → 模型配置，**先把模型配好再跑脚本**（知识库创建后 embedding 模型不可更换，选错只能删库重导）：
 
 1. 对话模型：MiniMax（base_url `https://api.minimaxi.com/v1`，填 API key）。
-2. Embedding 模型：来源选 **本地 (Ollama)**，模型名 `bge-m3`，维度 1024。
+2. Embedding 模型：远程 API，base_url `https://open.bigmodel.cn/api/paas/v4`，模型名 `Embedding-3`，维度 2048，填智谱 API key（先点“测试”确认维度）。
 3. Rerank：可选。
 
 ### 4. 生成 API Key
@@ -102,10 +91,10 @@ python3 setup.py --api-key sk-xxxx \
 
 脚本幂等（按名字复用、按文件名跳过已导入文档），做四件事：
 
-1. 建「Togather 客服知识库」（md 用本地解析引擎；chunk 2000 保证一个菜单分类不被切碎；embedding 自动优先选名字含 `bge` 的本地模型）。
+1. 建「Togather 客服知识库」（md 用本地解析引擎；chunk 2000 保证一个菜单分类不被切碎；embedding 自动优先选名字含 `embedding-3` 的模型，或用 `--embedding-model` 指定）。
 2. 拆分并导入 72 个知识文档（MENU/MENU_CN 按分类、STORES 按门店、其余整档）。
 3. 注册 MCP 服务 `togather-distance`（http-streamable → `http://togather-distance:9310/mcp`）并做连接测试，成功会打印发现的工具。
-4. 创建/更新 agent「Togather 客服小灵」：smart-reasoning、自定义 system prompt、绑知识库、勾选 MCP、citation 关闭、工具为 thinking + 4 个知识检索工具。
+4. 创建/更新 agent「Togather 客服小灵」：smart-reasoning、自定义 system prompt、绑知识库、勾选 MCP、citation 关闭、工具为 thinking + search_knowledge/read_document/list_documents，门店距离经 MCP 按需发现调用。
 
 等 1-2 分钟解析完成，确认全部 completed：
 
@@ -148,7 +137,7 @@ WeKnora 和 openclaw 都是 WhatsApp Web 协议的 companion 设备，**同一�
 1. **stdio MCP 被硬禁用**：WeKnora 出于命令注入风险禁 stdio transport，报 "stdio transport is disabled for security reasons"。所以距离服务走独立容器 + Streamable HTTP，别尝试 stdio。
 2. **SSRF 白名单**：MCP 容器主机名、所有模型 API 域名都要进 `SSRF_WHITELIST`。典型症状：`SSRF validation failed: resolves to restricted IP 198.18.x.x`（服务器 DNS 被 fake-ip 代理接管）或 `direct IP address access is not allowed`。改完 `.env` 必须 `docker compose up -d app` 重建（`restart` 不重读 env_file）。
 3. **重建 app 后前端 502**：app 容器重建 IP 会变，frontend 的 nginx 缓存旧 IP，页面报"加载模型列表失败"。执行 `docker compose restart frontend`。
-4. **embedding 模型建库后不可换**：换模型只能删知识库重导（setup.py 重跑即可），所以第 3 步先配好 bge-m3。
+4. **embedding 模型建库后不可换**：换模型只能新建知识库重导——先把旧库改名（setup.py 按名字复用知识库），再用 `--embedding-model` 重跑 setup.py，它会建新库、导文档并把 agent 改绑到新库；确认无误后再删旧库。所以第 3 步先配好 embedding。
 5. **WeKnoraCloud 免费 embedding 额度**：72 个文档会打爆（"额度已用完"），别用它做这个库的 embedding。
 6. **fork 合并 upstream 后的迁移编号**：如果 merge 导致 `migrations/versioned/` 重编号，upstream 插入的新迁移可能被 `schema_migrations` 版本号跳过（本地曾漏掉 `000085 messages.usage`，agent 对话直接 500 `column "usage" does not exist`）。merge 后核对 `select version from schema_migrations` 与文件号，缺的手动 `psql < up.sql` 补（全新部署不受影响）。
 7. **Nominatim 限流**：免费地理编码约 1 req/s。客服量大后在 `integrations/togather-distance/nearest.py` 换成 Google Geocoding / Mapbox（代码已留好扩展点）。
@@ -157,7 +146,7 @@ WeKnora 和 openclaw 都是 WhatsApp Web 协议的 companion 设备，**同一�
 
 - **改门店**（新店/换址/电话）：改 `integrations/togather-distance/stores.json`（含 lat/lng），MCP 每次调用现读，**不用重启**；同时更新 openclaw workspace 的 `STORES.md` 并重导对应知识文档。
 - **改菜单/政策知识**：改 `~/.openclaw/workspace-togather-cs/*.md` 后，在 UI 删掉对应旧文档再重跑 `setup.py`（脚本按文件名跳过已存在文档，不删不会更新）。
-- **改人格/规则**：改 `integrations/togather-cs/system_prompt.md` 重跑 `setup.py`（agent 是按名字更新的，直接生效）。
+- **改人格/规则**：改 `integrations/togather-cs/system_prompt.md` 重跑 `setup.py`（agent 是按名字更新的，直接生效）。重跑时用 `--chat-model` 带上当前对话模型 ID，否则脚本会自动挑名字含 minimax 的模型把 agent 改回去。
 - **防幻觉硬开关**：agent 配置里 `force_tool_first_round: true`（setup.py 已带）强制模型第一轮必须调工具才能作答，杜绝"不检索直接编菜单"。该字段需要 app 镜像 ≥ 本仓库 2026-08-25 版本——正式服务器 `git pull` 后先 `docker compose build app && docker compose up -d app` 再跑 `setup.py`，否则旧版 app 反序列化会丢掉这个字段。若换用不支持 `tool_choice:"required"` 的模型供应商，引擎会自动降级为普通行为（看日志 `retrying without it`）。
 
 ## 已知未迁移项
