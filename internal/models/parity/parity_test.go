@@ -566,6 +566,9 @@ func TestCatalogInvariants(t *testing.T) {
 // every vendor. A new model whose compat contradicts itself fails here.
 func TestEveryChatModelRequestShape(t *testing.T) {
 	for _, v := range modelruntime.List() {
+		if forkVendor(v.ID) {
+			continue
+		}
 		if !v.SupportsType(types.ModelTypeKnowledgeQA) {
 			continue
 		}

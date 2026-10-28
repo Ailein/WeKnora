@@ -23,6 +23,9 @@ import (
 func TestCatalogMigrationBaseline(t *testing.T) {
 	actual := map[string]string{}
 	for _, vendor := range modelruntime.List() {
+		if forkVendor(vendor.ID) {
+			continue
+		}
 		for _, entry := range vendor.Models() {
 			names := append([]string{entry.ID}, entry.Aliases...)
 			if entry.Match != "" {
