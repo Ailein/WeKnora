@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
@@ -16,6 +18,9 @@ import (
 
 // ErrWikiPageNotFound is returned when a wiki page is not found
 var ErrWikiPageNotFound = errors.New("wiki page not found")
+
+// ErrWikiIssueNotFound means no issue with that ID belongs to the knowledge base.
+var ErrWikiIssueNotFound = errors.New("wiki issue not found")
 
 // ErrWikiPageConflict is returned when an optimistic lock conflict is detected
 var ErrWikiPageConflict = errors.New("wiki page version conflict")
@@ -30,11 +35,54 @@ func NewWikiPageRepository(db *gorm.DB) interfaces.WikiPageRepository {
 	return &wikiPageRepository{db: db}
 }
 
+func (r *wikiPageRepository) wikiDialect() string {
+	if r.db == nil || r.db.Dialector == nil {
+		return ""
+	}
+	return r.db.Name()
+}
+
 func (r *wikiPageRepository) wikiCategoryRankOrder() string {
 	if r.db != nil && r.db.Dialector != nil && r.db.Dialector.Name() == "sqlite" {
 		return "CASE WHEN COALESCE(json_array_length(category_path), 0) > 0 THEN 0 ELSE 1 END ASC"
 	}
 	return "CASE WHEN COALESCE(jsonb_array_length(category_path), 0) > 0 THEN 0 ELSE 1 END ASC"
+}
+
+// wikiPageListSortColumn maps a caller-supplied sort_by to a quoted identifier.
+// Each Name is a string literal so user input never enters the ORDER BY text
+// (GORM quotes the column; direction is clause.OrderByColumn.Desc, not sprintf).
+func wikiPageListSortColumn(sortBy string) clause.Column {
+	switch sortBy {
+	case "title":
+		return clause.Column{Name: "title"}
+	case "created_at":
+		return clause.Column{Name: "created_at"}
+	case "updated_at":
+		return clause.Column{Name: "updated_at"}
+	case "page_type":
+		return clause.Column{Name: "page_type"}
+	case "wiki_path":
+		return clause.Column{Name: "wiki_path"}
+	case "sort_order":
+		return clause.Column{Name: "sort_order"}
+	case "depth":
+		return clause.Column{Name: "depth"}
+	default:
+		return clause.Column{Name: "updated_at"}
+	}
+}
+
+func (r *wikiPageRepository) applyWikiPageListOrder(query *gorm.DB, sortBy, sortOrder string) *gorm.DB {
+	col := wikiPageListSortColumn(sortBy)
+	desc := sortOrder != "asc"
+	if col.Name == "wiki_path" {
+		return query.Order(r.wikiCategoryRankOrder()).
+			Order(clause.OrderByColumn{Column: col, Desc: desc}).
+			Order(clause.OrderByColumn{Column: clause.Column{Name: "sort_order"}}).
+			Order(clause.OrderByColumn{Column: clause.Column{Name: "title"}})
+	}
+	return query.Order(clause.OrderByColumn{Column: col, Desc: desc})
 }
 
 func (r *wikiPageRepository) wikiEmptyInLinksPredicate() string {
@@ -319,30 +367,51 @@ func (r *wikiPageRepository) List(ctx context.Context, req *types.WikiPageListRe
 		query = query.Where("status = ?", req.Status)
 	}
 	if req.Query != "" {
-		// Use PostgreSQL full-text search + ILIKE for aliases
-		query = query.Where(
-			"(to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, '')) @@ plainto_tsquery('simple', ?) OR aliases::text ILIKE ?)",
-			req.Query,
-			"%"+req.Query+"%",
-		)
+		pattern := "%" + escapeLikeKeyword(req.Query) + "%"
+		if r.wikiDialect() == "sqlite" {
+			// SQLite does not provide PostgreSQL's full-text functions or casts.
+			// Search the same user-visible fields with a case-insensitive LIKE.
+			query = query.Where(
+				"(LOWER(COALESCE(title, '')) LIKE LOWER(?) ESCAPE ? OR "+
+					"LOWER(COALESCE(content, '')) LIKE LOWER(?) ESCAPE ? OR "+
+					"LOWER(CAST(aliases AS TEXT)) LIKE LOWER(?) ESCAPE ?)",
+				pattern, likeEscapeChar, pattern, likeEscapeChar, pattern, likeEscapeChar,
+			)
+		} else {
+			// Use PostgreSQL full-text search + ILIKE for aliases.
+			query = query.Where(
+				"(to_tsvector('simple', coalesce(title, '') || ' ' || "+
+					"coalesce(content, '')) @@ plainto_tsquery('simple', ?) OR "+
+					"aliases::text ILIKE ? ESCAPE ?)",
+				req.Query, pattern, likeEscapeChar,
+			)
+		}
 	}
 	// Directory filters are pushed to SQL so the DB does the counting and
 	// pagination instead of loading every page of the type into memory. `depth`
 	// is a cached column (= len(category_path)); `category_path` is a JSON column
-	// whose stored text is json.Marshal of the cleaned path, so we compare
-	// against the same encoding. Postgres needs an explicit jsonb cast for array
-	// equality; SQLite stores JSON as TEXT and compares directly.
+	// whose stored text is json.Marshal of the folder path segments, so we
+	// compare against the same encoding (literal segments, since the filter is a
+	// folder path and folder names are authoritative). Postgres needs an explicit
+	// jsonb cast for array equality; SQLite stores JSON as TEXT and compares
+	// directly.
 	if req.FolderID != nil {
 		query = query.Where("folder_id = ?", *req.FolderID)
 	}
 	if req.CategoryDepth != nil {
 		query = query.Where("depth = ?", *req.CategoryDepth)
 	}
-	if wantPath := types.CleanWikiCategoryPath(req.CategoryPath); len(wantPath) > 0 {
+	if wantPath := types.TrimWikiFolderSegments(req.CategoryPath); len(wantPath) > 0 {
 		if encoded, err := json.Marshal([]string(wantPath)); err == nil {
-			if r.db.Dialector != nil && r.db.Dialector.Name() == "postgres" {
+			switch r.wikiDialect() {
+			case "postgres":
 				query = query.Where("category_path::jsonb = ?::jsonb", string(encoded))
-			} else {
+			case "sqlite":
+				// StringArray.Value yields []byte, which SQLite stores as a BLOB;
+				// a BLOB never compares equal to a TEXT bind, so compare the
+				// text form instead.
+				query = query.Where("CAST(category_path AS TEXT) = ?", string(encoded))
+			default:
 				query = query.Where("category_path = ?", string(encoded))
 			}
 		}
@@ -353,26 +422,7 @@ func (r *wikiPageRepository) List(ctx context.Context, req *types.WikiPageListRe
 		return nil, 0, err
 	}
 
-	// Sort
-	sortBy := "updated_at"
-	if req.SortBy != "" {
-		switch req.SortBy {
-		case "title", "created_at", "updated_at", "page_type", "wiki_path", "sort_order", "depth":
-			sortBy = req.SortBy
-		}
-	}
-	sortOrder := "DESC"
-	if req.SortOrder == "asc" {
-		sortOrder = "ASC"
-	}
-	if sortBy == "wiki_path" {
-		query = query.Order(r.wikiCategoryRankOrder()).
-			Order(fmt.Sprintf("wiki_path %s", sortOrder)).
-			Order("sort_order ASC").
-			Order("title ASC")
-	} else {
-		query = query.Order(fmt.Sprintf("%s %s", sortBy, sortOrder))
-	}
+	query = r.applyWikiPageListOrder(query, req.SortBy, req.SortOrder)
 
 	page := req.Page
 	if page < 1 {
@@ -864,10 +914,7 @@ func (r *wikiPageRepository) ListSummariesByKnowledgeIDs(
 	out := make(map[string]string, len(rows))
 	for _, r := range rows {
 		for _, ref := range r.SourceRefs {
-			refKID := ref
-			if pipeIdx := strings.Index(ref, "|"); pipeIdx > 0 {
-				refKID = ref[:pipeIdx]
-			}
+			refKID := types.WikiSourceKnowledgeID(ref)
 			if _, want := kidSet[refKID]; !want {
 				continue
 			}
@@ -1004,16 +1051,13 @@ func (r *wikiPageRepository) ListByTypeRecent(
 }
 
 // FindSimilarPages returns the top-k entity/concept pages whose lowercase
-// title is most similar to the given query under PostgreSQL pg_trgm
-// trigram similarity. Backed by idx_wiki_pages_title_trgm (GIN
-// gin_trgm_ops, migration 000041). Used by the dedup pre-filter to
-// surface candidate merge targets without loading every entity/concept
-// page into Go.
+// title is most similar to the given query. PostgreSQL uses pg_trgm backed by
+// idx_wiki_pages_title_trgm (GIN gin_trgm_ops, migration 000041). SQLite does
+// not implement pg_trgm, so Lite loads the filtered title projection and ranks
+// it with a compatible padded-trigram Jaccard fallback in Go.
 //
 // types is an optional page_type allow-list; empty means entity+concept.
-// limit is clamped to [1, 50]. Pages whose title similarity is below
-// 0.1 are dropped server-side via the `%` operator (which respects
-// pg_trgm.similarity_threshold).
+// limit is clamped to [1, 50].
 func (r *wikiPageRepository) FindSimilarPages(
 	ctx context.Context,
 	kbID string,
@@ -1035,6 +1079,9 @@ func (r *wikiPageRepository) FindSimilarPages(
 	}
 
 	q := strings.ToLower(strings.TrimSpace(query))
+	if r.wikiDialect() == "sqlite" {
+		return r.findSimilarPagesSQLite(ctx, kbID, q, pageTypes, limit)
+	}
 
 	var rows []types.WikiPageLite
 	if err := r.db.WithContext(ctx).
@@ -1047,12 +1094,113 @@ func (r *wikiPageRepository) FindSimilarPages(
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	out := make([]*types.WikiPageLite, len(rows))
-	for i := range rows {
-		r := rows[i]
-		out[i] = &r
+	return wikiPageLitePointers(rows), nil
+}
+
+// findSimilarPagesSQLite is the Lite equivalent of the PostgreSQL pg_trgm
+// query above. SQLite has no pg_trgm extension or compatible similarity
+// operator, so it fetches only the dedup projection and ranks padded rune
+// trigrams in-process. The corpus is already scoped to one knowledge base and
+// the entity/concept page types before any rows enter Go.
+func (r *wikiPageRepository) findSimilarPagesSQLite(
+	ctx context.Context,
+	kbID, query string,
+	pageTypes []string,
+	limit int,
+) ([]*types.WikiPageLite, error) {
+	var rows []types.WikiPageLite
+	if err := r.db.WithContext(ctx).
+		Model(&types.WikiPage{}).
+		Select("slug, title, page_type, status, aliases, out_links").
+		Where("knowledge_base_id = ? AND page_type IN ? AND status <> ?",
+			kbID, pageTypes, types.WikiPageStatusArchived).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	queryGrams := wikiTitleTrigrams(query)
+	scored := make([]scoredWikiPageLite, 0, len(rows))
+	for _, row := range rows {
+		score := wikiTrigramJaccard(queryGrams, wikiTitleTrigrams(row.Title))
+		if score >= wikiSQLiteTrigramScoreFloor {
+			scored = append(scored, scoredWikiPageLite{page: row, score: score})
+		}
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		return scored[i].page.Slug < scored[j].page.Slug
+	})
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+
+	out := make([]*types.WikiPageLite, len(scored))
+	for i := range scored {
+		page := scored[i].page
+		out[i] = &page
 	}
 	return out, nil
+}
+
+// wikiSQLiteTrigramScoreFloor uses pg_trgm's default similarity threshold.
+// It keeps a coincidental shared trigram from entering the dedup prompt on Lite.
+// PostgreSQL deployments may still configure pg_trgm with a different threshold.
+const wikiSQLiteTrigramScoreFloor = 0.3
+
+type scoredWikiPageLite struct {
+	page  types.WikiPageLite
+	score float64
+}
+
+func wikiPageLitePointers(rows []types.WikiPageLite) []*types.WikiPageLite {
+	out := make([]*types.WikiPageLite, len(rows))
+	for i := range rows {
+		row := rows[i]
+		out[i] = &row
+	}
+	return out
+}
+
+// wikiTitleTrigrams follows pg_trgm's word boundaries: non-alphanumeric
+// characters separate words, and each word receives two leading spaces and
+// one trailing space before its rune trigrams are added to the shared set.
+func wikiTitleTrigrams(value string) map[string]struct{} {
+	words := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	if len(words) == 0 {
+		return nil
+	}
+	grams := make(map[string]struct{})
+	for _, word := range words {
+		runes := append([]rune{' ', ' '}, []rune(word)...)
+		runes = append(runes, ' ')
+		for i := 0; i+3 <= len(runes); i++ {
+			grams[string(runes[i:i+3])] = struct{}{}
+		}
+	}
+	return grams
+}
+
+func wikiTrigramJaccard(left, right map[string]struct{}) float64 {
+	if len(left) == 0 || len(right) == 0 {
+		return 0
+	}
+	if len(left) > len(right) {
+		left, right = right, left
+	}
+	intersection := 0
+	for gram := range left {
+		if _, ok := right[gram]; ok {
+			intersection++
+		}
+	}
+	if intersection == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(len(left)+len(right)-intersection)
 }
 
 func wikiNormalizedTitleSQL(db *gorm.DB) string {
@@ -1220,20 +1368,68 @@ func (r *wikiPageRepository) DeleteByID(ctx context.Context, id string) error {
 	return nil
 }
 
-// escapeLikePattern escapes LIKE / ILIKE metacharacters so the returned string
-// can be safely concatenated with % wildcards without unintended matches.
-// Order matters: escape the backslash first, then the wildcards.
-func escapeLikePattern(s string) string {
-	replacer := strings.NewReplacer(
-		`\`, `\\`,
-		`%`, `\%`,
-		`_`, `\_`,
-	)
-	return replacer.Replace(s)
+// deleteByTenantAndKnowledgeBase deletes model rows for one tenant+KB.
+// The empty-kbID guard prevents a missing predicate from matching every row.
+func (r *wikiPageRepository) deleteByTenantAndKnowledgeBase(
+	ctx context.Context, tenantID uint64, kbID string, model any,
+) error {
+	if kbID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).
+		Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, kbID).
+		Delete(model).Error
 }
 
-// Search performs case-insensitive POSIX regex search on wiki pages within a knowledge base.
-// The query is interpreted as a PostgreSQL regular expression (via ~*).
+// DeleteByKnowledgeBaseID soft-deletes all wiki pages in a knowledge base.
+// GORM's Delete on a model with DeletedAt sets deleted_at and subsequent
+// queries auto-filter deleted_at IS NULL, so this is a one-shot UPDATE.
+func (r *wikiPageRepository) DeleteByKnowledgeBaseID(
+	ctx context.Context, tenantID uint64, kbID string,
+) error {
+	return r.deleteByTenantAndKnowledgeBase(ctx, tenantID, kbID, &types.WikiPage{})
+}
+
+// DeleteFoldersByKnowledgeBaseID soft-deletes all wiki folders in a knowledge
+// base, bypassing the emptiness guard that DeleteFolder enforces. The whole
+// KB is being torn down, so non-empty folders must go.
+func (r *wikiPageRepository) DeleteFoldersByKnowledgeBaseID(
+	ctx context.Context, tenantID uint64, kbID string,
+) error {
+	return r.deleteByTenantAndKnowledgeBase(ctx, tenantID, kbID, &types.WikiFolder{})
+}
+
+// DeleteRevisionsByKnowledgeBaseID hard-deletes all wiki page revisions in a
+// knowledge base. wiki_page_revisions has no deleted_at column — it stores
+// immutable snapshots, not soft-deletable rows — so GORM's Delete falls back
+// to a physical DELETE, same as DeleteRevisionsByPage but scoped to the KB
+// via the indexed knowledge_base_id column.
+func (r *wikiPageRepository) DeleteRevisionsByKnowledgeBaseID(
+	ctx context.Context, tenantID uint64, kbID string,
+) error {
+	return r.deleteByTenantAndKnowledgeBase(ctx, tenantID, kbID, &types.WikiPageRevision{})
+}
+
+// DeleteIssuesByKnowledgeBaseID soft-deletes all wiki page issues in a
+// knowledge base. Issues carry DeletedAt, so GORM sets deleted_at and
+// subsequent queries auto-filter them out.
+func (r *wikiPageRepository) DeleteIssuesByKnowledgeBaseID(
+	ctx context.Context, tenantID uint64, kbID string,
+) error {
+	return r.deleteByTenantAndKnowledgeBase(ctx, tenantID, kbID, &types.WikiPageIssue{})
+}
+
+// escapeLikePattern escapes LIKE / ILIKE metacharacters so the returned string
+// can be safely concatenated with % wildcards without unintended matches.
+// It is a thin alias for escapeLikeKeyword, which owns the (order-sensitive)
+// escaping rules; both must stay paired with an explicit ESCAPE clause.
+func escapeLikePattern(s string) string {
+	return escapeLikeKeyword(s)
+}
+
+// Search performs full-text search on wiki pages within a knowledge base.
+// PostgreSQL interprets the query as a case-insensitive POSIX regex (~*);
+// SQLite / Lite matches a literal substring with LIKE (wildcards escaped).
 //
 // Results are ranked by where the query hit, highest-relevance first:
 //
@@ -1247,7 +1443,53 @@ func escapeLikePattern(s string) string {
 // see pages like "华为" or "Index" ahead of the actual 王新 page just
 // because they mention 王新 in their body and were updated more recently.
 // updated_at stays as the tiebreaker so same-rank ties stay deterministic.
-func (r *wikiPageRepository) Search(ctx context.Context, kbID string, query string, limit int) ([]*types.WikiPage, error) {
+func (r *wikiPageRepository) Search(
+	ctx context.Context, kbID string, query string, limit int,
+) ([]*types.WikiPage, error) {
+	return r.SearchAcross(ctx, []string{kbID}, query, limit)
+}
+
+func wikiSearchPredicate(column, op string, withEscape bool) string {
+	if withEscape {
+		return column + " " + op + " ? ESCAPE ?"
+	}
+	return column + " " + op + " ?"
+}
+
+func wikiSearchMatchArgs(pattern, escape string, withEscape bool, copies int) []interface{} {
+	n := copies
+	if withEscape {
+		n *= 2
+	}
+	args := make([]interface{}, 0, n)
+	for i := 0; i < copies; i++ {
+		args = append(args, pattern)
+		if withEscape {
+			args = append(args, escape)
+		}
+	}
+	return args
+}
+
+func (r *wikiPageRepository) wikiSearchMatchOp() (op string, withEscape bool) {
+	// SQLite / Lite (desktop single-binary) has no POSIX ~*; LIKE matches
+	// a literal substring. Postgres production keeps ~*.
+	if r.wikiDialect() == "sqlite" {
+		return "LIKE", true
+	}
+	return "~*", false
+}
+
+// SearchAcross searches wiki pages in the given knowledge bases with the
+// same field-priority rank as the single-KB Search path, then truncates
+// to a global top-N. SQLite / Lite uses LIKE with an explicit ESCAPE;
+// Postgres uses POSIX ~*.
+func (r *wikiPageRepository) SearchAcross(
+	ctx context.Context, kbIDs []string, query string, limit int,
+) ([]*types.WikiPage, error) {
+	if len(kbIDs) == 0 {
+		return nil, nil
+	}
 	if limit <= 0 {
 		limit = 10
 	}
@@ -1255,22 +1497,31 @@ func (r *wikiPageRepository) Search(ctx context.Context, kbID string, query stri
 		limit = 50
 	}
 
-	// CASE expression is evaluated per-row during SELECT; we order by the
-	// alias so the DB only computes the rank once. Parameterized four
-	// times with the same regex to avoid coupling to GORM's positional
-	// arg rewriting quirks.
+	op, withEscape := r.wikiSearchMatchOp()
+	pattern := query
+	if withEscape {
+		pattern = "%" + escapeLikePattern(query) + "%"
+	}
+	pred := func(column string) string {
+		return wikiSearchPredicate(column, op, withEscape)
+	}
 	rankExpr := "CASE " +
-		"WHEN title ~* ? THEN 4 " +
-		"WHEN slug ~* ? THEN 3 " +
-		"WHEN summary ~* ? THEN 2 " +
-		"WHEN content ~* ? THEN 1 " +
+		"WHEN " + pred("title") + " THEN 4 " +
+		"WHEN " + pred("slug") + " THEN 3 " +
+		"WHEN " + pred("summary") + " THEN 2 " +
+		"WHEN " + pred("content") + " THEN 1 " +
 		"ELSE 0 END AS match_rank"
+	matchClause := "(" + pred("title") + " OR " + pred("content") +
+		" OR " + pred("summary") + " OR " + pred("slug") + ")"
+	matchArgs := wikiSearchMatchArgs(pattern, likeEscapeChar, withEscape, 4)
+	whereArgs := make([]interface{}, 0, 1+len(matchArgs))
+	whereArgs = append(whereArgs, kbIDs)
+	whereArgs = append(whereArgs, matchArgs...)
 
 	var pages []*types.WikiPage
 	if err := r.db.WithContext(ctx).
-		Select("*, "+rankExpr, query, query, query, query).
-		Where("knowledge_base_id = ? AND (title ~* ? OR content ~* ? OR summary ~* ? OR slug ~* ?)",
-			kbID, query, query, query, query).
+		Select("*, "+rankExpr, matchArgs...).
+		Where("knowledge_base_id IN ? AND "+matchClause, whereArgs...).
 		Where("status != ?", "archived").
 		Order("match_rank DESC, updated_at DESC").
 		Limit(limit).
@@ -1338,8 +1589,17 @@ func (r *wikiPageRepository) ListIssues(ctx context.Context, kbID string, slug s
 	return issues, nil
 }
 
-func (r *wikiPageRepository) UpdateIssueStatus(ctx context.Context, issueID string, status string) error {
-	return r.db.WithContext(ctx).Model(&types.WikiPageIssue{}).
-		Where("id = ?", issueID).
-		Update("status", status).Error
+func (r *wikiPageRepository) UpdateIssueStatus(ctx context.Context, kbID string, issueID string, status string) error {
+	// Scoped to the knowledge base the caller was authorized for: issue IDs are
+	// listed to readers, so an ID alone must not reach another KB's issue.
+	result := r.db.WithContext(ctx).Model(&types.WikiPageIssue{}).
+		Where("id = ? AND knowledge_base_id = ?", issueID, kbID).
+		Update("status", status)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrWikiIssueNotFound
+	}
+	return nil
 }

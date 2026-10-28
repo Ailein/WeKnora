@@ -18,18 +18,18 @@ import (
 func TestLoadAgentHistory_AppendsTakeoverUserMessages(t *testing.T) {
 	base := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	rows := []*types.Message{
-		{Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
-		{Role: "assistant", RequestID: "r1", Content: "回答一", IsCompleted: true, CreatedAt: base.Add(time.Second)},
+		{ID: "u1", Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
+		{ID: "a1", Role: "assistant", RequestID: "r1", Content: "回答一", IsCompleted: true, CreatedAt: base.Add(time.Second)},
 		// Operator takes over: the user keeps talking, the operator answers.
-		{Role: "user", RequestID: "t1", Channel: types.ChannelIMTakeover, IsCompleted: true,
+		{ID: "t1", Role: "user", RequestID: "t1", Channel: types.ChannelIMTakeover, IsCompleted: true,
 			Content: "转人工，我要改订单", CreatedAt: base.Add(2 * time.Second)},
-		{Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
+		{ID: "m1", Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
 			Content: "好的，已为您修改", CreatedAt: base.Add(3 * time.Second)},
-		{Role: "user", RequestID: "t2", Channel: types.ChannelIMTakeover, IsCompleted: true,
+		{ID: "t2", Role: "user", RequestID: "t2", Channel: types.ChannelIMTakeover, IsCompleted: true,
 			Content: "谢谢", CreatedAt: base.Add(4 * time.Second)},
 	}
 
-	got, err := LoadAgentHistory(context.Background(), &fakeHistoryMessageRepo{rows: rows}, "s1", 10)
+	got, _, err := LoadAgentHistory(context.Background(), &historyRepo{rows: rows}, "s1", unlimitedBudget, false)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
@@ -42,18 +42,18 @@ func TestLoadAgentHistory_AppendsTakeoverUserMessages(t *testing.T) {
 }
 
 // TestLoadAgentHistory_TakeoverMessageOutsideWindowDropped mirrors the manual
-// reply truncation policy: a takeover-period user message whose turn fell out
-// of the retained window must not leak into a later turn.
+// reply truncation policy: a takeover-period user message whose turn is not
+// replayed must not leak into a later turn.
 func TestLoadAgentHistory_TakeoverMessageOutsideWindowDropped(t *testing.T) {
 	base := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	rows := []*types.Message{
-		{Role: "user", RequestID: "t0", Channel: types.ChannelIMTakeover, IsCompleted: true,
+		{ID: "t0", Role: "user", RequestID: "t0", Channel: types.ChannelIMTakeover, IsCompleted: true,
 			Content: "最早的人工期消息", CreatedAt: base.Add(-time.Minute)},
-		{Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
-		{Role: "assistant", RequestID: "r1", Content: "回答一", IsCompleted: true, CreatedAt: base.Add(time.Second)},
+		{ID: "u1", Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
+		{ID: "a1", Role: "assistant", RequestID: "r1", Content: "回答一", IsCompleted: true, CreatedAt: base.Add(time.Second)},
 	}
 
-	got, err := LoadAgentHistory(context.Background(), &fakeHistoryMessageRepo{rows: rows}, "s1", 10)
+	got, _, err := LoadAgentHistory(context.Background(), &historyRepo{rows: rows}, "s1", unlimitedBudget, false)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	for _, m := range got {

@@ -1,5 +1,6 @@
 import i18n from '@/i18n';
 import { buildMermaidBlockHtml, buildMermaidLoadingHtml } from '@/utils/markdownEnhancements';
+import { buildManualDraft, collectManualDraftPreferredKbIds, deriveManualTitle } from './manualKnowledgeDraft';
 import {
   injectCachedMermaidSvg as injectCachedMermaidSvgHtml,
   maskMermaidBlocksForStreaming as maskMermaidBlocks,
@@ -67,17 +68,22 @@ export const injectCachedMermaidSvg = (
 };
 
 export const formatManualTitle = (question?: string): string => {
-  if (!question) {
-    return i18n.global.t('chat.sessionExcerpt');
-  }
-  const condensed = question.replace(/\s+/g, ' ').trim();
-  if (!condensed) {
-    return i18n.global.t('chat.sessionExcerpt');
-  }
-  return condensed.length > 40 ? `${condensed.slice(0, 40)}...` : condensed;
+  return deriveManualTitle(question || '', i18n.global.t('chat.sessionExcerpt'));
 };
 
 export const buildManualMarkdown = (_question: string, answer: string): string => {
-  const safeAnswer = answer?.trim() || i18n.global.t('chat.noAnswerContent');
-  return `${safeAnswer}`;
+  return buildManualDraft(answer, {
+    emptyAnswer: i18n.global.t('chat.noAnswerContent'),
+    sourcesHeading: i18n.global.t('chat.manualSourcesHeading'),
+  });
 };
+
+/**
+ * Soft knowledge-base preferences for the manual editor, in citation order.
+ * The editor resolves the first id that is already in its writable candidate
+ * list; nothing is force-inserted. Empty when the answer has no retrievable
+ * provenance (plain chat / missing references).
+ */
+export const collectManualPreferredKbIds = (
+  references?: { knowledge_base_id?: string }[] | null,
+): string[] => collectManualDraftPreferredKbIds(references);

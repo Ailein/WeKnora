@@ -13,7 +13,11 @@
       <span v-if="durationLabel">{{ durationLabel }}</span>
       <span v-if="view.killed">{{ $t('agentStream.shellExec.killed') }}</span>
       <span v-if="view.truncated">{{ $t('agentStream.shellExec.truncated') }}</span>
+      <span v-if="workId">{{ workId }}</span>
+      <span v-if="workState">{{ workState }}</span>
     </div>
+
+    <div v-if="note" class="shell-exec-note">{{ note }}</div>
 
     <div v-if="view.stdoutBinary || view.stderrBinary" class="shell-exec-note">
       {{ $t('agentStream.shellExec.binarySuppressed') }}
@@ -37,18 +41,34 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { ShellJobPayload } from '@/api/chat/background-work'
 import type { ShellExecData } from '@/types/tool-results'
 import { buildShellExecView } from '@/utils/shellExecResult'
 
 const props = defineProps<{
-  data: ShellExecData | Record<string, unknown>
+  data?: ShellExecData | ShellJobPayload | Record<string, unknown> | null
   output?: string
   arguments?: Record<string, unknown>
 }>()
 
+const source = computed(() => {
+  const value = props.data
+  if (value && typeof value === 'object') return value as unknown as Record<string, unknown>
+  return null
+})
+
 const view = computed(() =>
-  buildShellExecView(props.data as Record<string, unknown>, props.arguments, props.output),
+  buildShellExecView(source.value, props.arguments, props.output),
 )
+
+function textField(key: string): string {
+  const value = source.value?.[key]
+  return typeof value === 'string' ? value : ''
+}
+
+const workId = computed(() => textField('work_id'))
+const workState = computed(() => textField('state'))
+const note = computed(() => textField('note'))
 
 const hasMeta = computed(() =>
   Boolean(
@@ -56,7 +76,9 @@ const hasMeta = computed(() =>
     view.value.exitCode !== null ||
     view.value.durationMs !== null ||
     view.value.killed ||
-    view.value.truncated,
+    view.value.truncated ||
+    workId.value ||
+    workState.value,
   ),
 )
 
@@ -84,7 +106,7 @@ const durationLabel = computed(() => {
   gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--td-component-stroke);
-  border-radius: 6px;
+  border-radius: var(--app-radius-sm);
   background: var(--td-bg-color-secondarycontainer);
 }
 
@@ -92,7 +114,7 @@ const durationLabel = computed(() => {
   flex-shrink: 0;
   margin-top: 1px;
   font-family: var(--app-font-family-mono);
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   font-weight: 600;
   line-height: 1.55;
   color: var(--td-text-color-placeholder);
@@ -103,7 +125,7 @@ const durationLabel = computed(() => {
   min-width: 0;
   margin: 0;
   font-family: var(--app-font-family-mono);
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   line-height: 1.55;
   color: var(--td-text-color-primary);
   white-space: pre-wrap;
@@ -114,7 +136,7 @@ const durationLabel = computed(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   line-height: 1.4;
   color: var(--td-text-color-placeholder);
 
@@ -125,7 +147,7 @@ const durationLabel = computed(() => {
 
 .shell-exec-note,
 .shell-exec-empty {
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   line-height: 1.4;
   color: var(--td-text-color-placeholder);
 }
@@ -133,7 +155,7 @@ const durationLabel = computed(() => {
 .shell-exec-stream {
   min-width: 0;
   border: 1px solid var(--td-component-stroke);
-  border-radius: 6px;
+  border-radius: var(--app-radius-sm);
   overflow: hidden;
   background: var(--td-bg-color-container);
 
@@ -144,7 +166,7 @@ const durationLabel = computed(() => {
 
 .shell-exec-stream-label {
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   font-weight: 500;
   line-height: 1.4;
   color: var(--td-text-color-secondary);
@@ -158,7 +180,7 @@ const durationLabel = computed(() => {
   max-height: 280px;
   overflow: auto;
   font-family: var(--app-font-family-mono);
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   line-height: 1.55;
   color: var(--td-text-color-primary);
   white-space: pre-wrap;
@@ -171,7 +193,7 @@ const durationLabel = computed(() => {
 
   &::-webkit-scrollbar-thumb {
     background: var(--td-component-border);
-    border-radius: 4px;
+    border-radius: var(--app-radius-xs);
   }
 }
 </style>

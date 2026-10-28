@@ -26,6 +26,15 @@ test('getAgentToolIconName maps rag pipeline tools', () => {
   assert.equal(getAgentToolIconName('knowledge_search'), 'data-search')
 })
 
+test('getAgentToolIconName maps the consolidated knowledge tools and their retired names alike', () => {
+  assert.equal(getAgentToolIconName('search_knowledge'), 'data-search')
+  assert.equal(getAgentToolIconName('search_knowledge', 'web'), 'internet')
+  assert.equal(getAgentToolIconName('read_document'), 'file-search')
+  assert.equal(getAgentToolIconName('list_documents'), 'file-search')
+  assert.equal(getAgentToolIconName('list_knowledge_chunks'), 'file-search')
+  assert.equal(getAgentToolIconName('get_document_info'), 'file-search')
+})
+
 test('getAgentToolIconName maps sandbox shell tools to the terminal icon', () => {
   assert.equal(getAgentToolIconName('shell_exec'), 'terminal')
 })
@@ -36,6 +45,13 @@ test('getAgentToolIconName maps skill and sandbox file tools', () => {
   assert.equal(getAgentToolIconName('list_sandbox_files'), 'folder')
   assert.equal(getAgentToolIconName('read_sandbox_file'), 'file')
   assert.equal(getAgentToolIconName('execute_skill_script'), 'code')
+})
+
+test('getAgentToolIconName maps operation and product-doc tools', () => {
+  assert.equal(getAgentToolIconName('find_operations'), 'task')
+  assert.equal(getAgentToolIconName('run_operation'), 'terminal')
+  assert.equal(getAgentToolIconName('search_weknora_docs'), 'search')
+  assert.equal(getAgentToolIconName('read_weknora_doc'), 'file')
 })
 
 test('getAgentToolIconName maps Wiki tools to semantic search and reading icons', () => {

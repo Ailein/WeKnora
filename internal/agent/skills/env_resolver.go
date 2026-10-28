@@ -3,9 +3,8 @@ package skills
 import (
 	"context"
 	"fmt"
+	"path"
 	"strings"
-
-	"github.com/Tencent/WeKnora/internal/sandbox"
 )
 
 // SkillEnvResolver produces the environment one execution gets. It is separate
@@ -18,9 +17,12 @@ import (
 // row id is an implementation detail of the installed-skill source.
 type SkillEnvResolver interface {
 	// ResolveEnv returns the values to inject and the names of any required
-	// variable that neither the admin nor this caller has filled in. An empty
-	// skillName asks for the caller's config-wide variables alone. The caller's
-	// identity is taken from ctx, never from a parameter.
+	// variable that neither the admin, this caller, nor the sandbox config's
+	// create-time env_vars has filled in. Create-time names satisfy required
+	// but are not in the returned map: they were baked into the sandbox at
+	// creation and must not be re-injected per exec. An empty skillName asks
+	// for the caller's config-wide variables alone. The caller's identity is
+	// taken from ctx, never from a parameter.
 	ResolveEnv(ctx context.Context, skillName string) (env map[string]string, missing []string, err error)
 }
 
@@ -67,24 +69,25 @@ func ApplyResolvedEnv(env, resolved map[string]string) {
 	}
 }
 
-// applySessionPackagePath prepends the per-session extra-packages directory
-// so a frozen skill venv can still see `pip install --target` extras without
-// mutating the snapshot. Missing directories are ignored by the interpreters.
-func applySessionPackagePath(env map[string]string, skillName string) {
-	if env == nil {
+// applySkillNodePath puts the skill's own node_modules on NODE_PATH, after
+// anything the caller supplied.
+//
+// Python gets no equivalent on purpose. Its dependencies are reached through
+// the skill's own virtualenv interpreter, which the shell wrapper puts first
+// on PATH and which already carries its site-packages. A PYTHONPATH entry
+// would have to name that site-packages directory by interpreter version to
+// be importable at all, and pointing it at the venv root — as an overlay-era
+// path did — resolves nothing.
+func applySkillNodePath(env map[string]string, skillDir string) {
+	if env == nil || skillDir == "" {
 		return
 	}
-	dir := sandbox.SessionSkillPackageDir(skillName)
-	if dir == "" {
-		return
-	}
-	prependPathEnv(env, pythonPathEnvVar, dir)
-	prependPathEnv(env, nodePathEnvVar, dir)
+	appendPathEnv(env, nodePathEnvVar, path.Join(skillDir, "node_modules"))
 }
 
-func prependPathEnv(env map[string]string, key, dir string) {
+func appendPathEnv(env map[string]string, key, dir string) {
 	if existing := strings.TrimSpace(env[key]); existing != "" {
-		env[key] = dir + ":" + existing
+		env[key] = existing + ":" + dir
 		return
 	}
 	env[key] = dir

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	agenttoken "github.com/Tencent/WeKnora/internal/agent/token"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 )
 
@@ -30,11 +31,12 @@ func serializeConversation(messages []chat.Message) string {
 	var parts []string
 	for i := range messages {
 		msg := &messages[i]
+		text := messageText(*msg)
 		switch msg.Role {
 		case "system":
 			continue
 		case "user":
-			if content := truncate(msg.Content, textMaxChars); content != "" {
+			if content := truncate(text, textMaxChars); content != "" {
 				parts = append(parts, "[User]: "+content)
 			}
 		case "assistant":
@@ -42,14 +44,14 @@ func serializeConversation(messages []chat.Message) string {
 				parts = append(parts,
 					"[Assistant thinking]: "+truncate(msg.ReasoningContent, textMaxChars))
 			}
-			if msg.Content != "" {
-				parts = append(parts, "[Assistant]: "+truncate(msg.Content, textMaxChars))
+			if text != "" {
+				parts = append(parts, "[Assistant]: "+truncate(text, textMaxChars))
 			}
 			if calls := serializeToolCalls(msg.ToolCalls); calls != "" {
 				parts = append(parts, "[Assistant tool calls]: "+calls)
 			}
 		case "tool":
-			if content := truncate(msg.Content, toolResultMaxChars); content != "" {
+			if content := truncate(text, toolResultMaxChars); content != "" {
 				parts = append(parts, fmt.Sprintf("[Tool result %s]: %s", msg.Name, content))
 			}
 		}
@@ -106,23 +108,69 @@ func truncate(s string, maxChars int) string {
 // rawArchive is the fallback when the summarizer is unavailable. It is lossy
 // and unstructured, but it keeps the tool names and paths that the next round
 // needs in order not to redo finished work.
-func rawArchive(messages []chat.Message) string {
-	var sb strings.Builder
-	sb.WriteString("Raw conversation archive (LLM summarization unavailable):\n\n")
+//
+// It stands in for a summary, so it is held to budget tokens like one, keeping
+// the newest messages. Unbounded, an archive of a history that filled the
+// window could be nearly as large as the history, and a compaction that frees
+// nothing leaves the request over the window.
+func rawArchive(messages []chat.Message, budget int, estimator *agenttoken.Estimator) string {
+	lines := make([]string, 0, len(messages))
 	for i := range messages {
-		msg := &messages[i]
-		switch msg.Role {
-		case "user":
-			fmt.Fprintf(&sb, "- User: %s\n", truncate(msg.Content, 500))
-		case "assistant":
-			if calls := serializeToolCalls(msg.ToolCalls); calls != "" {
-				fmt.Fprintf(&sb, "- Assistant [%s]: %s\n", calls, truncate(msg.Content, 500))
-				continue
-			}
-			fmt.Fprintf(&sb, "- Assistant: %s\n", truncate(msg.Content, 500))
-		case "tool":
-			fmt.Fprintf(&sb, "- Tool[%s]: %s\n", msg.Name, truncate(msg.Content, 500))
+		if line := archiveLine(&messages[i]); line != "" {
+			lines = append(lines, line)
 		}
 	}
+	kept := len(lines)
+	if budget > 0 && estimator != nil {
+		used := 0
+		for i := len(lines) - 1; i >= 0; i-- {
+			used += estimator.EstimateString(lines[i])
+			if used > budget && i < len(lines)-1 {
+				kept = len(lines) - 1 - i
+				break
+			}
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Raw conversation archive (LLM summarization unavailable):\n\n")
+	if omitted := len(lines) - kept; omitted > 0 {
+		fmt.Fprintf(&sb, "[%d earlier messages omitted]\n", omitted)
+	}
+	for _, line := range lines[len(lines)-kept:] {
+		sb.WriteString(line)
+	}
 	return sb.String()
+}
+
+func archiveLine(msg *chat.Message) string {
+	text := messageText(*msg)
+	switch msg.Role {
+	case "user":
+		return fmt.Sprintf("- User: %s\n", truncate(text, 500))
+	case "assistant":
+		if calls := serializeToolCalls(msg.ToolCalls); calls != "" {
+			return fmt.Sprintf("- Assistant [%s]: %s\n", calls, truncate(text, 500))
+		}
+		return fmt.Sprintf("- Assistant: %s\n", truncate(text, 500))
+	case "tool":
+		return fmt.Sprintf("- Tool[%s]: %s\n", msg.Name, truncate(text, 500))
+	}
+	return ""
+}
+
+// messageText follows the providers' preference for multipart content. The
+// sanitizer can move a compaction summary's text into MultiContent while
+// retaining its Kind, so scalar Content alone is not a complete transcript.
+func messageText(msg chat.Message) string {
+	if len(msg.MultiContent) == 0 {
+		return msg.Content
+	}
+	var text strings.Builder
+	for _, part := range msg.MultiContent {
+		if part.Type == "text" {
+			text.WriteString(part.Text)
+		}
+	}
+	return text.String()
 }

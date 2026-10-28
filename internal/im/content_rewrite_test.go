@@ -114,6 +114,7 @@ func TestFindIncompleteXMLTag(t *testing.T) {
 }
 
 func TestResolveIMFileServiceForPath_LocalSchemeDespiteCOSDefault(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
 	t.Setenv("SYSTEM_AES_KEY", "weknora-test-aes-key-32bytes!!!")
 	t.Setenv("APP_EXTERNAL_URL", "https://weknora.example.com")
 
@@ -136,6 +137,7 @@ func TestResolveIMFileServiceForPath_LocalSchemeDespiteCOSDefault(t *testing.T) 
 }
 
 func TestRewriteStorageURLs_LocalUsesPresignedAPI(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
 	t.Setenv("SYSTEM_AES_KEY", "weknora-test-aes-key-32bytes!!!")
 	t.Setenv("APP_EXTERNAL_URL", "https://weknora.example.com")
 
@@ -348,6 +350,7 @@ func TestSimulateIMStreamFlush_BareProviderURLStillHeld(t *testing.T) {
 }
 
 func TestCleanIMContent_AfterStreamReassembly(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
 	t.Setenv("SYSTEM_AES_KEY", "weknora-test-aes-key-32bytes!!!")
 	t.Setenv("APP_EXTERNAL_URL", "https://weknora.example.com")
 
@@ -370,7 +373,7 @@ func TestCleanIMContent_AfterStreamReassembly(t *testing.T) {
 	sent, rem := simulateIMStreamFlush(parts)
 	require.Empty(t, rem)
 	joined := strings.Join(sent, "")
-	out := cleanIMContent(context.Background(), joined, tenant, nil)
+	out := cleanIMContent(context.Background(), joined, newIMFileServiceResolver(tenant, nil))
 	assert.Contains(t, out, "/api/v1/files/presigned")
 	assert.NotContains(t, out, "local://10000")
 }
@@ -397,6 +400,7 @@ func TestSimulateIMStreamFlush_BracketInAltMiddleImage(t *testing.T) {
 }
 
 func TestRewriteStorageURLs_MultipleImagesInOneChunk(t *testing.T) {
+	t.Setenv("SYSTEM_SIGNING_KEY", "")
 	t.Setenv("SYSTEM_AES_KEY", "weknora-test-aes-key-32bytes!!!")
 	t.Setenv("APP_EXTERNAL_URL", "https://weknora.example.com")
 

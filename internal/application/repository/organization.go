@@ -8,12 +8,14 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
 	ErrOrganizationNotFound   = errors.New("organization not found")
 	ErrOrgMemberNotFound      = errors.New("organization member not found")
 	ErrOrgMemberAlreadyExists = errors.New("member already exists in organization")
+	ErrOrgMemberLimitReached  = errors.New("organization member limit reached")
 	ErrInviteCodeNotFound     = errors.New("invite code not found")
 	ErrInviteCodeExpired      = errors.New("invite code has expired")
 )
@@ -89,9 +91,21 @@ func (r *organizationRepository) ListSearchable(ctx context.Context, query strin
 	var orgs []*types.Organization
 	q := r.db.WithContext(ctx).Where("searchable = ?", true)
 	if query != "" {
-		pattern := "%" + query + "%"
+		pattern := "%" + escapeLikeKeyword(query) + "%"
 		// 支持按名称、描述或空间 ID 搜索，便于区分同名空间
-		q = q.Where("name ILIKE ? OR description ILIKE ? OR id::text ILIKE ?", pattern, pattern, pattern)
+		if r.db.Name() == "sqlite" {
+			q = q.Where(
+				"LOWER(name) LIKE LOWER(?) ESCAPE ? OR "+
+					"LOWER(description) LIKE LOWER(?) ESCAPE ? OR "+
+					"LOWER(CAST(id AS TEXT)) LIKE LOWER(?) ESCAPE ?",
+				pattern, likeEscapeChar, pattern, likeEscapeChar, pattern, likeEscapeChar,
+			)
+		} else {
+			q = q.Where(
+				"name ILIKE ? ESCAPE ? OR description ILIKE ? ESCAPE ? OR id::text ILIKE ? ESCAPE ?",
+				pattern, likeEscapeChar, pattern, likeEscapeChar, pattern, likeEscapeChar,
+			)
+		}
 	}
 	err := q.Order("created_at DESC").Limit(limit).Find(&orgs).Error
 	if err != nil {
@@ -115,18 +129,45 @@ func (r *organizationRepository) Delete(ctx context.Context, id string) error {
 // AddTenantMember inserts a new (org, tenant) membership row. Returns
 // ErrOrgMemberAlreadyExists if a row already exists for this tuple — the
 // service layer treats that as a no-op when the caller is just confirming
-// an idempotent join.
-func (r *organizationRepository) AddTenantMember(ctx context.Context, member *types.OrganizationTenantMember) error {
-	var count int64
-	r.db.WithContext(ctx).Model(&types.OrganizationTenantMember{}).
-		Where("organization_id = ? AND tenant_id = ?", member.OrganizationID, member.TenantID).
-		Count(&count)
-
-	if count > 0 {
-		return ErrOrgMemberAlreadyExists
-	}
-
-	return r.db.WithContext(ctx).Create(member).Error
+// an idempotent join — and ErrOrgMemberLimitReached when a positive
+// memberLimit is already reached.
+func (r *organizationRepository) AddTenantMember(
+	ctx context.Context, member *types.OrganizationTenantMember, memberLimit int,
+) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// A positive limit is checked in the same transaction as the insert,
+		// with the organization row locked, so concurrent joins cannot all
+		// pass the count. SQLite has no row locks; it serializes writers,
+		// and a stale read fails to upgrade to a write instead.
+		if memberLimit > 0 && tx.Name() != "sqlite" {
+			var org types.Organization
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+				Where("id = ?", member.OrganizationID).First(&org).Error; err != nil {
+				return err
+			}
+		}
+		var existing int64
+		if err := tx.Model(&types.OrganizationTenantMember{}).
+			Where("organization_id = ? AND tenant_id = ?", member.OrganizationID, member.TenantID).
+			Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing > 0 {
+			return ErrOrgMemberAlreadyExists
+		}
+		if memberLimit > 0 {
+			var count int64
+			if err := tx.Model(&types.OrganizationTenantMember{}).
+				Where("organization_id = ?", member.OrganizationID).
+				Count(&count).Error; err != nil {
+				return err
+			}
+			if count >= int64(memberLimit) {
+				return ErrOrgMemberLimitReached
+			}
+		}
+		return tx.Create(member).Error
+	})
 }
 
 // RemoveTenantMember removes the (org, tenant) membership row.
@@ -328,13 +369,17 @@ func (r *organizationRepository) CountJoinRequests(ctx context.Context, orgID st
 
 // UpdateJoinRequestStatus updates the status of a join request
 func (r *organizationRepository) UpdateJoinRequestStatus(ctx context.Context, id string, status types.JoinRequestStatus, reviewedBy string, reviewMessage string) error {
+	reviewedAt := gorm.Expr("NOW()")
+	if r.db.Name() == "sqlite" {
+		reviewedAt = gorm.Expr("CURRENT_TIMESTAMP")
+	}
 	return r.db.WithContext(ctx).
 		Model(&types.OrganizationJoinRequest{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"status":         status,
 			"reviewed_by":    reviewedBy,
-			"reviewed_at":    gorm.Expr("NOW()"),
+			"reviewed_at":    reviewedAt,
 			"review_message": reviewMessage,
 		}).Error
 }

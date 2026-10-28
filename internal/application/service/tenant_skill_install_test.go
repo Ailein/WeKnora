@@ -22,6 +22,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/application/repository"
+	"github.com/Tencent/WeKnora/internal/application/service/sandboxalloc"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -29,6 +30,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/models/rerank"
 	"github.com/Tencent/WeKnora/internal/models/vlm"
 	"github.com/Tencent/WeKnora/internal/sandbox"
+	"github.com/Tencent/WeKnora/internal/sandbox/allocation"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/google/uuid"
@@ -48,7 +50,7 @@ func TestRunInstallHappyPathSwitchesPointerLast(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"create-session", "prepare-skill-dir", "seed-files", "agent-execute",
-		"chmod", "verify-structure", "verify-python", "write-manifest",
+		"verify-structure", "verify-python", "write-manifest",
 		"cleanup-workspace", "create-snapshot",
 		"switch-pointer", "mark-stale", "destroy-sandbox",
 	}, fx.events, "the pointer must move only after the snapshot exists")
@@ -63,8 +65,11 @@ func TestRunInstallHappyPathSwitchesPointerLast(t *testing.T) {
 		"the pointer switch must be exactly one config write")
 	require.Empty(t, fx.deletedSnapshots,
 		"a successful install deletes nothing; the previous image stays reachable")
-	require.False(t, fx.loadCheckRanAsRoot,
-		"script verification must run as the ordinary sandbox user, not install-mode root")
+	require.False(t, fx.loadCheckOpts.AsRoot,
+		"verification runs on the ordinary executor, whose account is already root; "+
+			"taking the install-mode escape would test a shell a session never gets")
+	require.False(t, fx.loadCheckOpts.AllowSkillsRoot,
+		"verification must not be able to write outside the session workspace")
 	require.Equal(t, []string{"Skill install"}, fx.sessionTitles)
 
 	skill, err := fx.skillRepo.GetSkill(context.Background(), 7, "cfg-1", "sk-1")
@@ -112,11 +117,9 @@ func TestNextSnapshotGenerationSkipsAbandonedLedgerRows(t *testing.T) {
 }
 
 // TestRunInstallIssuesExactlyTheseCommands pins the order, not just the set.
-// Ownership and permissions are normalised BEFORE verification on purpose: the
-// agent creates the tree as root, so a restrictive root umask would leave the
-// .venv interpreter unreadable and fail a perfectly good install in the
-// non-root verification pass, which must exercise the same permissions the
-// snapshot will carry.
+// No permission hand-over appears in it: the tree is built and verified by the
+// same account (DefaultSandboxExecUser, root), so there is nobody to hand it
+// to between the agent's turn and the verification pass.
 func TestRunInstallIssuesExactlyTheseCommands(t *testing.T) {
 	fx := newInstallFixture(t)
 
@@ -126,20 +129,10 @@ func TestRunInstallIssuesExactlyTheseCommands(t *testing.T) {
 		installPrepareCommand,
 		installToolsProbeCommand(),
 		seedExtractCommand(installSkillDir),
-		"chmod -R 555 " + installSkillDir + " && chown -R root:root " + installSkillDir,
 		skillTreeVerifyCommand(installSkillDir, []string{"scripts/extract.py"}),
 		installPythonVerifyCommand,
 		cleanImageScratchCommand(),
 	}, fx.commands)
-}
-
-func TestRunInstallNormalisesPermissionsBeforeVerifying(t *testing.T) {
-	fx := newInstallFixture(t)
-
-	require.NoError(t, fx.svc.runInstall(context.Background(), 7, "cfg-1", "sk-1", fx.bundle))
-
-	require.Less(t, indexOfEvent(fx.events, "chmod"), indexOfEvent(fx.events, "verify-python"),
-		"the non-root verification pass must execute the permissions that get snapshotted")
 }
 
 func TestRunInstallWipesThePreviousTreeBeforeSeeding(t *testing.T) {
@@ -233,8 +226,10 @@ func TestSkillTreeVerifyCommandQuotesPaths(t *testing.T) {
 func TestVerifySkillTreeIssuesOneCommandRegardlessOfScriptCount(t *testing.T) {
 	fx := newInstallFixture(t)
 	files := map[string][]byte{"SKILL.md": []byte(validSkillMD)}
-	rels := []string{"run.sh", "scripts/a.py", "scripts/b.py",
-		"scripts/c.py", "scripts/d.py", "scripts/e.py"}
+	rels := []string{
+		"run.sh", "scripts/a.py", "scripts/b.py",
+		"scripts/c.py", "scripts/d.py", "scripts/e.py",
+	}
 	for _, rel := range rels {
 		files[rel] = []byte("pass\n")
 	}
@@ -282,7 +277,9 @@ func TestCacheBudgetGuardKeepsSmallWipesBig(t *testing.T) {
 func TestCleanImageScratchCommandShape(t *testing.T) {
 	cmd := cleanImageScratchCommand()
 
-	require.Contains(t, cmd, "rm -rf /workspace/* /workspace/.[!.]* || true")
+	require.Contains(t, cmd, "rm -rf /workspace/* /tmp/* /workspace/.[!.]* /run/desktop || true",
+		"the scratch wipe covers /tmp and /run/desktop: a leftover websockify "+
+			"secret would be reused by every sandbox booted from the snapshot")
 	require.Contains(t, cmd, "mkdir -p")
 	require.Contains(t, cmd, "status=$?")
 	require.Contains(t, cmd, "exit $status")
@@ -292,7 +289,8 @@ func TestCleanImageScratchCommandShape(t *testing.T) {
 	require.Contains(t, cmd, "du -skc")
 	require.Contains(t, cmd, fmt.Sprintf("%d", skillCacheBudgetMB*1024))
 	require.Contains(t, cmd, "/root/.cache/uv")
-	require.Contains(t, cmd, "/home/"+sandbox.DefaultSandboxExecUser+"/.npm")
+	// Only /root caches: DefaultSandboxExecUser is root now, so there is no
+	// second "user" account cache under /home to guard.
 
 	// And it must parse: the command is one opaque string to the sandbox, so a
 	// quoting mistake would only surface as a runtime failure there.
@@ -749,15 +747,15 @@ func TestInstallSkillRecoversFromNameConflict(t *testing.T) {
 	fx.skillRepo.createErr = errors.New("UNIQUE constraint failed: tenant_skills.sandbox_config_id")
 	archive := zipBundle(t, map[string]string{"SKILL.md": validSkillMD})
 
-	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
 	require.Equal(t, "sk-1", id,
 		"the upload that lost the unique index must reuse the row that won")
-	skill, getErr := fx.skillRepo.GetSkill(context.Background(), 7, "cfg-1", "sk-1")
-	require.NoError(t, getErr)
-	require.Equal(t, types.SkillStatusInstalling, skill.Status)
+	// The install runs in the background and the fixture row already starts at
+	// installing, so an immediate status read raced the goroutine and proved
+	// nothing. The run finishing on the reused row is what shows it was taken.
+	waitBackgroundInstallReady(t, fx, "the install must run on the row that won")
 }
 
 func TestInstallSkillRefusesWhenBundleCannotBeStored(t *testing.T) {
@@ -805,6 +803,25 @@ func TestInstallSkillSkipsWhenReadyWithTheSameArchive(t *testing.T) {
 		"a skip must still attach the install to the workspace catalog")
 }
 
+// waitBackgroundInstallReady waits until the InstallSkill goroutine has
+// finished the fixture run. InstallSkill only queues the work, so reading
+// Status immediately after it returns races: the mock often lands on ready
+// before the test process runs the next line. A skip never writes a new
+// snapshot, so this is also the proof that a retry actually ran.
+func waitBackgroundInstallReady(t *testing.T, fx *installFixture, msgAndArgs ...any) *types.TenantSkillEntity {
+	t.Helper()
+	var skill *types.TenantSkillEntity
+	require.Eventually(t, func() bool {
+		got, err := fx.skillRepo.GetSkill(context.Background(), 7, "cfg-1", "sk-1")
+		if err != nil || got == nil {
+			return false
+		}
+		skill = got
+		return got.Status == types.SkillStatusReady && got.InstalledSnapshotID != ""
+	}, 2*time.Second, 5*time.Millisecond, msgAndArgs...)
+	return skill
+}
+
 func TestInstallSkillRetriesAFailedSkillWithTheSameArchive(t *testing.T) {
 	fx := newInstallFixture(t)
 	archive := zipBundle(t, map[string]string{
@@ -819,15 +836,13 @@ func TestInstallSkillRetriesAFailedSkillWithTheSameArchive(t *testing.T) {
 		Status: types.SkillStatusFailed, Error: "previous run died",
 	}))
 
-	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
 	require.Equal(t, "sk-1", id)
-	skill, getErr := fx.skillRepo.GetSkill(context.Background(), 7, "cfg-1", "sk-1")
-	require.NoError(t, getErr)
-	require.Equal(t, types.SkillStatusInstalling, skill.Status,
+	skill := waitBackgroundInstallReady(t, fx,
 		"a failed skill is a retry even when the archive digest is unchanged")
+	require.Empty(t, skill.Error)
 }
 
 // Most failed installs fail for a reason the archive cannot fix, so the retry
@@ -916,14 +931,11 @@ func TestInstallSkillReinstallsWhenTheLiveImageNoLongerCarriesTheSkill(t *testin
 	// The pointer was cleared (last-skill removal, or a rebuild from base).
 	// The row still says ready, but the files are gone from every new session.
 
-	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
 	require.Equal(t, "sk-1", id)
-	skill, getErr := fx.skillRepo.GetSkill(context.Background(), 7, "cfg-1", "sk-1")
-	require.NoError(t, getErr)
-	require.Equal(t, types.SkillStatusInstalling, skill.Status,
+	waitBackgroundInstallReady(t, fx,
 		"a ready row whose files left the image is a repair, not a skip")
 }
 
@@ -995,18 +1007,14 @@ func TestInstallSkillRetriesAStaleInFlightInstallOfTheSameArchive(t *testing.T) 
 		Error: "the previous process is gone",
 	}))
 
-	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
 	require.Equal(t, "sk-1", id)
-	skill, getErr := fx.skillRepo.GetSkill(context.Background(), 7, "cfg-1", "sk-1")
-	require.NoError(t, getErr)
-	require.Equal(t, types.SkillStatusInstalling, skill.Status)
-	require.NotNil(t, skill.InstallingSince)
-	require.Equal(t, fx.now(), *skill.InstallingSince,
+	skill := waitBackgroundInstallReady(t, fx,
 		"a dead in-flight row must be allowed to start a new run, not wait for the reaper")
 	require.Empty(t, skill.Error)
+	require.Nil(t, skill.InstallingSince)
 }
 
 // The ledger records which skill an install snapshotted, not which archive, so
@@ -1143,14 +1151,11 @@ func TestInstallSkillDoesNotSkipARemovalOfTheSameArchive(t *testing.T) {
 		Status: types.SkillStatusRemoving,
 	}))
 
-	fx.holdInstallRun("sk-1")
 	id, err := fx.svc.InstallSkill(context.Background(), 7, "cfg-1", archive)
 
 	require.NoError(t, err)
 	require.Equal(t, "sk-1", id)
-	skill, getErr := fx.skillRepo.GetSkill(context.Background(), 7, "cfg-1", "sk-1")
-	require.NoError(t, getErr)
-	require.Equal(t, types.SkillStatusInstalling, skill.Status,
+	waitBackgroundInstallReady(t, fx,
 		"re-uploading during a removal is how the upload cancels it")
 }
 
@@ -1400,6 +1405,20 @@ func TestSortedScriptPathsIsDeterministic(t *testing.T) {
 		"only files the runtime can execute are scripts")
 }
 
+func TestSortedScriptPathsSkipsVendoredTreesAtAnyDepth(t *testing.T) {
+	bundle := &SkillBundle{Files: map[string][]byte{
+		"scripts/main.py":                    []byte("x"),
+		".venv/lib/pkg/a.py":                 []byte("x"),
+		"node_modules/leftpad/index.js":      []byte("x"),
+		"tools/.venv/lib/otherpkg/b.py":      []byte("x"),
+		"sub/package/node_modules/pkg/c.mjs": []byte("x"),
+	}}
+
+	require.Equal(t, []string{"scripts/main.py"},
+		sortedScriptPaths(bundle, allScriptExtensions...),
+		"vendored trees are skipped at the bundle root and nested under subprojects")
+}
+
 type stubWorkspaceSandboxPolicy struct {
 	disabled bool
 }
@@ -1636,27 +1655,24 @@ func TestRunInstallHandsVerificationFindingsBackToTheInstaller(t *testing.T) {
 	require.Empty(t, skill.Error)
 }
 
-// A repair round has to be able to write into .venv again, which the
-// verification pass just locked down: the checks run as the ordinary user, so
-// the tree is handed over at 555 and root-owned before every one of them.
-func TestRunInstallReopensTheTreeBeforeARepairRound(t *testing.T) {
+// A repair round writes into the tree a verification pass just looked at, and
+// under the default root account it reaches it directly: modes left behind by
+// an earlier pass do not stop root, and the tree is never handed to another
+// account. What a repair round needs is a second agent turn and a second
+// verification — not a permission fix-up.
+func TestRunInstallRepairsWithoutReopeningTheTree(t *testing.T) {
 	fx := newInstallFixture(t)
 	fx.loadCheckExitCodes = []int{skillVerifyRepairableExit, 0}
 
 	require.NoError(t, fx.svc.runInstall(context.Background(), 7, "cfg-1", "sk-1", fx.bundle))
 
-	reopen := indexOfCommandContaining(fx.commands, "chmod -R u+rwX,go+rX "+installSkillDir)
-	require.GreaterOrEqual(t, reopen, 0, "the tree must be writable again for the repair")
-
-	firstLock := indexOfCommandContaining(fx.commands, "chmod -R 555 "+installSkillDir)
-	require.GreaterOrEqual(t, firstLock, 0)
-	require.Greater(t, reopen, firstLock,
-		"the tree is reopened after the pass that locked it, not before")
-
-	// And locked again for the pass that checks the repair, so the final image
-	// carries the modes every verification ran against.
-	require.Greater(t, lastIndexOfCommandContaining(fx.commands, "chmod -R 555 "+installSkillDir),
-		reopen, "the repaired tree must be locked down again before it is verified")
+	require.Equal(t, 2, fx.loadCheckPasses, "the repair has to be verified, not trusted")
+	require.Equal(t, -1, indexOfCommandContaining(fx.commands, "chmod -R u+rwX,go+rX "),
+		"root writes through whatever modes a verification pass leaves behind")
+	for _, command := range fx.commands {
+		require.NotContains(t, command, "chown",
+			"the tree is built, repaired and verified by one account; there is nothing to re-own")
+	}
 }
 
 // Installing a package cannot fix a file that does not parse, and the bundle
@@ -1889,6 +1905,28 @@ func TestStartMaintenanceSessionMarksAndScopesTheSession(t *testing.T) {
 	require.Equal(t, "Skill install", sess.Title)
 }
 
+type failingPlacer struct{}
+
+func (failingPlacer) Place(context.Context, sandboxalloc.PlaceRequest) (allocation.Assignment, error) {
+	return allocation.Assignment{}, errors.New("db unavailable")
+}
+
+func (failingPlacer) Lookup(context.Context, string) (allocation.Assignment, bool, error) {
+	return allocation.Assignment{}, false, nil
+}
+
+// A placement failure aborts the operation and must not leave the hidden
+// maintenance session row behind.
+func TestStartMaintenanceSessionRemovesTheSessionWhenPlacementFails(t *testing.T) {
+	fx := newInstallFixture(t)
+	fx.svc.WithPlacer(failingPlacer{})
+	ctx := context.WithValue(ctxWithTenant(7), types.UserIDContextKey, "admin-1")
+
+	_, _, err := fx.svc.startMaintenanceSession(ctx, 7, "cfg-1", "install")
+	require.ErrorContains(t, err, "record install sandbox placement")
+	require.Equal(t, []string{"CreateSession", "DeleteSession"}, fx.sessionCalls)
+}
+
 const installSkillDir = "/opt/weknora/tenant/skills/pdf-tools"
 
 // The install commands are asserted verbatim: an install runs as root with the
@@ -1897,7 +1935,6 @@ const installSkillDir = "/opt/weknora/tenant/skills/pdf-tools"
 const (
 	installPrepareCommand = "rm -rf " + installSkillDir +
 		" && mkdir -p /opt/weknora/tenant/skills " + installSkillDir +
-		" && chown user:user /opt/weknora/tenant/skills " + installSkillDir +
 		" && chmod 755 /opt/weknora/tenant/skills " + installSkillDir
 )
 
@@ -1919,21 +1956,10 @@ func indexOfEvent(events []string, needle string) int {
 	return -1
 }
 
-// indexOfCommandContaining and its Last variant locate one shell command in the
-// ordered transcript. A repair round issues the same commands twice, so the
-// tests that care about ordering need both ends.
+// indexOfCommandContaining locates one shell command in the ordered transcript.
 func indexOfCommandContaining(commands []string, needle string) int {
 	for i, command := range commands {
 		if strings.Contains(command, needle) {
-			return i
-		}
-	}
-	return -1
-}
-
-func lastIndexOfCommandContaining(commands []string, needle string) int {
-	for i := len(commands) - 1; i >= 0; i-- {
-		if strings.Contains(commands[i], needle) {
 			return i
 		}
 	}
@@ -1979,10 +2005,13 @@ type installFixture struct {
 	// execResult is scoped to execResultCommand: an unscoped stub result
 	// applies to the first command issued, which is not the command any of
 	// these tests is about.
-	execResultCommand  string
-	execResult         *sandbox.ExecuteResult
-	loadCheckRanAsRoot bool
-	agentErr           error
+	execResultCommand string
+	execResult        *sandbox.ExecuteResult
+	// loadCheckOpts is how the per-language verification pass asked to run.
+	// It must stay an ordinary exec: verification exists to prove what a real
+	// skill call will see, so it may not take the install-mode escapes.
+	loadCheckOpts sandbox.ShellExecOptions
+	agentErr      error
 	// agentPrompts is every prompt the installer engine was handed, in order.
 	// A repair round is a second entry, and what it says is the whole point of
 	// having one.
@@ -1990,6 +2019,7 @@ type installFixture struct {
 	// beforeExecute runs at the moment the engine would start, so a test can
 	// observe the state an attaching console would see mid-install.
 	beforeExecute func()
+	afterExecute  func()
 	// beforeSeed runs on the first image file write, so a test can prove the
 	// transcript locators landed before the minutes-long copy begins.
 	beforeSeed func()
@@ -2106,6 +2136,7 @@ func newInstallFixture(t *testing.T) *installFixture {
 		nil,
 		&transcriptStreams{},
 		&transcriptMessages{},
+		HostSandboxManager{},
 	)
 	fx.svc.now = func() time.Time { return time.Date(2026, 8, 19, 9, 30, 0, 0, time.UTC) }
 	return fx
@@ -2113,40 +2144,6 @@ func newInstallFixture(t *testing.T) *installFixture {
 
 func (f *installFixture) record(event string) {
 	f.events = append(f.events, event)
-}
-
-// holdInstallRun parks the background run at the moment the installer engine
-// would start, so a test can read the row exactly as the operator who just got
-// the 202 would. InstallSkill answers before the run has done anything, and
-// with an instant fake sandbox the run would otherwise race the assertion to
-// "ready" on a loaded machine. The run is released when the test ends and
-// waited for, so nothing it writes lands after the fixture is gone.
-func (f *installFixture) holdInstallRun(skillID string) {
-	f.t.Helper()
-	reached := make(chan struct{})
-	gate := make(chan struct{})
-	var reachedOnce sync.Once
-	f.beforeExecute = func() {
-		reachedOnce.Do(func() { close(reached) })
-		<-gate
-	}
-	f.t.Cleanup(func() {
-		close(gate)
-		select {
-		case <-reached:
-		case <-time.After(10 * time.Second):
-			f.t.Errorf("the background install of %s never reached the installer engine", skillID)
-			return
-		}
-		deadline := time.Now().Add(10 * time.Second)
-		for f.svc.lookupSkillRun(7, "cfg-1", skillID) != nil {
-			if time.Now().After(deadline) {
-				f.t.Errorf("the background install of %s did not finish", skillID)
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
-	})
 }
 
 // nextLoadCheckExit returns the code for this verification pass, repeating the
@@ -2321,6 +2318,13 @@ func (r *installConfigRepo) SetCordon(context.Context, uint64, string, time.Time
 	return nil
 }
 func (r *installConfigRepo) ClearCordon(context.Context, uint64, string) error { return nil }
+func (r *installConfigRepo) RefreshCordon(context.Context, uint64, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (r *installConfigRepo) ClearCordonIf(context.Context, uint64, string, time.Time) error {
+	return nil
+}
 
 type installSkillRepo struct {
 	mu        sync.Mutex
@@ -3016,7 +3020,7 @@ func (m *installSandboxManager) ExecShellCommandWithOptions(
 			return &sandbox.ExecuteResult{ExitCode: m.fx.depsExitCode, Stderr: "deps missing"}, nil
 		}
 	case command == installPythonVerifyCommand:
-		m.fx.loadCheckRanAsRoot = opts.AsRoot
+		m.fx.loadCheckOpts = opts
 		m.fx.record("verify-python")
 		if m.fx.loadCheckResult != nil {
 			return m.fx.loadCheckResult, nil
@@ -3039,8 +3043,6 @@ func (m *installSandboxManager) ExecShellCommandWithOptions(
 		}, nil
 	case command == cleanImageScratchCommand():
 		m.fx.record("cleanup-workspace")
-	case strings.HasPrefix(command, "chmod -R 555 "):
-		m.fx.record("chmod")
 	}
 	if m.fx.execResult != nil && command == m.fx.execResultCommand {
 		return m.fx.execResult, nil
@@ -3161,8 +3163,11 @@ func (s *installCustomAgentService) ListAgents(context.Context) ([]*types.Custom
 }
 
 func (s *installCustomAgentService) UpdateAgent(
-	_ context.Context, agent *types.CustomAgent,
+	_ context.Context, agent *types.CustomAgent, avatar *string,
 ) (*types.CustomAgent, error) {
+	if avatar != nil {
+		agent.Avatar = *avatar
+	}
 	return agent, nil
 }
 
@@ -3203,7 +3208,8 @@ func (s *installAgentService) CreateAgentEngine(
 func (s *installAgentService) ValidateConfig(*types.AgentConfig) error { return nil }
 
 type installAgentEngine struct {
-	fx *installFixture
+	sink types.SteerSink
+	fx   *installFixture
 }
 
 func (e *installAgentEngine) Execute(
@@ -3219,15 +3225,49 @@ func (e *installAgentEngine) Execute(
 	}
 	e.fx.agentPrompts = append(e.fx.agentPrompts, prompt)
 	e.fx.record("agent-execute")
+	if e.sink != nil {
+		events, _, err := e.sink.PollSteer(context.Background(), "sess-1", e.fx.currentInstallMessageID(), 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, evt := range events {
+			e.sink.PersistSteerMessage(
+				context.Background(), "sess-1", e.fx.currentInstallMessageID(),
+				evt["id"].(string), evt["content"].(string), nil, "web",
+			)
+		}
+	}
+	if e.fx.afterExecute != nil {
+		e.fx.afterExecute()
+	}
 	if e.fx.agentDelay > 0 {
 		time.Sleep(e.fx.agentDelay)
 	}
 	if e.fx.agentErr != nil {
 		return nil, e.fx.agentErr
 	}
+	if e.fx.sandboxMgr.files == nil {
+		e.fx.sandboxMgr.files = map[string][]byte{}
+	}
+	reportPath := path.Join(e.fx.engineConfig.SkillInstallDir(), ".weknora", "install-report.json")
+	if _, exists := e.fx.sandboxMgr.files[reportPath]; !exists {
+		e.fx.sandboxMgr.files[reportPath] = []byte(`{"commands":[],"blockers":[]}`)
+	}
 	return &types.AgentState{IsComplete: true}, nil
 }
-func (e *installAgentEngine) SetMemoryPrompt(string) {}
+func (e *installAgentEngine) SetMemoryPrompt(string)                               {}
+func (e *installAgentEngine) SetSteerSink(sink types.SteerSink)                    { e.sink = sink }
+func (e *installAgentEngine) SetContextCheckpointSink(types.ContextCheckpointSink) {}
+
+func (e *installAgentEngine) EnableSuspension(json.RawMessage) {}
+
+func (e *installAgentEngine) SetRunMode(types.RunMode) {}
+
+func (e *installAgentEngine) Resume(context.Context, string, string, []chat.Message,
+	[]byte, *types.AgentPrompt,
+) (*types.AgentState, error) {
+	return nil, errors.New("not supported")
+}
 
 type installSessionService struct {
 	fx *installFixture
@@ -3325,9 +3365,9 @@ func (s *installSessionService) KnowledgeQAByEvent(context.Context, *types.ChatM
 }
 
 func (s *installSessionService) SearchKnowledge(
-	context.Context, []string, []string, []types.TagScope, string,
-) ([]*types.SearchResult, error) {
-	return nil, nil
+	context.Context, []string, []string, []types.TagScope, string, *types.KnowledgeSearchOptions,
+) (*types.RetrievalResult, error) {
+	return &types.RetrievalResult{}, nil
 }
 
 func (s *installSessionService) AgentQA(context.Context, *types.QARequest, *event.EventBus) error {
@@ -3341,6 +3381,10 @@ type installModelService struct {
 }
 
 func (s *installModelService) CreateModel(context.Context, *types.Model) error { return nil }
+func (s *installModelService) CopyModel(context.Context, string, string) (*types.Model, error) {
+	return nil, nil
+}
+
 func (s *installModelService) GetModelByID(context.Context, string) (*types.Model, error) {
 	return nil, nil
 }
@@ -3381,7 +3425,9 @@ func (s *installModelService) GetChatModel(_ context.Context, modelID string) (c
 	}
 	return installChat{id: modelID}, nil
 }
+
 func (s *installModelService) GetVLMModel(context.Context, string) (vlm.VLM, error) { return nil, nil }
+
 func (s *installModelService) GetASRModel(context.Context, string) (asr.ASR, error) { return nil, nil }
 
 type installChat struct{ id string }
@@ -3434,6 +3480,7 @@ func (s installFileService) SaveBytes(_ context.Context, data []byte, _ uint64, 
 	}
 	return "file://bundle.zip", nil
 }
+
 func (s installFileService) GetFile(_ context.Context, ref string) (io.ReadCloser, error) {
 	if s.fx != nil {
 		s.fx.getFileCalls.Add(1)
@@ -3453,4 +3500,31 @@ func (s installFileService) DeleteFile(_ context.Context, ref string) error {
 
 func (installFileService) CopyFile(context.Context, string, uint64, string) (string, error) {
 	return "", nil
+}
+
+func TestSeededSkillHelperIsDirectlyExecutable(t *testing.T) {
+	raw, err := packSkillTar(&SkillBundle{Files: map[string][]byte{
+		"scripts/helper.sh": []byte("#!/bin/sh\nprintf 'helper works'\n"),
+	}})
+	require.NoError(t, err)
+	dir := t.TempDir()
+	cmd := exec.Command("tar", "-xf", "-", "-C", dir)
+	cmd.Stdin = bytes.NewReader(raw)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	helper := filepath.Join(dir, "scripts", "helper.sh")
+	out, err = exec.Command(helper).CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	require.Equal(t, "helper works", string(out))
+	info, err := os.Stat(helper)
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode().Perm()&0o200, "the executable skill remains writable")
+}
+
+func (f *installFixture) currentInstallMessageID() string {
+	row, _ := f.skillRepo.GetSkill(context.Background(), 7, "cfg-1", "sk-1")
+	if row == nil {
+		return ""
+	}
+	return row.InstallMessageID
 }

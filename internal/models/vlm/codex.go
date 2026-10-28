@@ -8,7 +8,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
-	"github.com/Tencent/WeKnora/internal/models/provider"
+	"github.com/Tencent/WeKnora/internal/models/providers"
 )
 
 // CodexVLM serves the VLM interface over the ChatGPT-subscription Codex
@@ -26,7 +26,7 @@ func NewCodexVLM(config *Config) (*CodexVLM, error) {
 		BaseURL:       config.BaseURL,
 		APIKey:        config.APIKey,
 		RefreshToken:  config.RefreshToken,
-		Provider:      string(provider.ProviderCodex),
+		Provider:      providers.CodexID,
 		CustomHeaders: config.CustomHeaders,
 		ExtraConfig:   stringAnyMapToStringMap(config.Extra),
 	})
@@ -49,10 +49,18 @@ func stringAnyMapToStringMap(in map[string]any) map[string]string {
 	return out
 }
 
-// Predict sends the images plus prompt as one user turn. Reasoning is pinned
-// low: OCR/captioning wants extraction, not deliberation, and the VLM path
-// has no budget for long thinking phases.
+// Predict sends the images plus prompt as one user turn with thinking off
+// (low effort): OCR/captioning wants extraction, not deliberation, and the
+// VLM path has no budget for long thinking phases.
 func (v *CodexVLM) Predict(ctx context.Context, imgBytesList [][]byte, prompt string) (string, error) {
+	return v.PredictWithOptions(ctx, imgBytesList, prompt, nil)
+}
+
+// PredictWithOptions is Predict with a per-call thinking switch; an unset
+// switch keeps the low-effort default above.
+func (v *CodexVLM) PredictWithOptions(
+	ctx context.Context, imgBytesList [][]byte, prompt string, opts *PredictOptions,
+) (string, error) {
 	parts := []chat.MessageContentPart{{Type: "text", Text: prompt}}
 	for _, imgBytes := range imgBytesList {
 		if len(imgBytes) == 0 {
@@ -70,10 +78,18 @@ func (v *CodexVLM) Predict(ctx context.Context, imgBytesList [][]byte, prompt st
 		v.inner.GetModelName(), len(imgBytesList))
 
 	thinking := false
+	if opts != nil && opts.Thinking != nil {
+		thinking = *opts.Thinking
+	}
+	ctx, cancel := context.WithTimeout(ctx, vlmHTTPTimeout())
+	defer cancel()
 	resp, err := v.inner.Chat(ctx, []chat.Message{{Role: "user", MultiContent: parts}},
 		&chat.ChatOptions{Thinking: &thinking})
 	if err != nil {
 		return "", fmt.Errorf("Codex VLM request: %w", err)
+	}
+	if resp.FinishReason == "length" {
+		return "", fmt.Errorf("%w (finish_reason=length)", ErrTruncatedCompletion)
 	}
 	if strings.TrimSpace(resp.Content) == "" {
 		return "", fmt.Errorf("Codex VLM returned no content (finish_reason=%s)", resp.FinishReason)

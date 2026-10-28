@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { marked } from 'marked'
+import { renderChatMarkdown } from './chatMarkdownRenderer.ts'
+import { renderArtifactFileIcon } from './artifactFileIcon'
 
 import {
+  installArtifactLinkRenderer,
   isArtifactRefHref,
   normalizeSandboxArtifactRefs,
   renderArtifactReference,
@@ -9,7 +13,20 @@ import {
   type ArtifactRefMeta,
 } from './sandboxArtifactRefs.ts'
 
-const labels = { previewHint: '点击预览', missingHint: '文件不可用' }
+const labels = { previewHint: '点击预览', missingHint: '文件不可用', deletedHint: '文件已删除' }
+
+test('inline file cards reuse the drawer icon and keep filenames escaped', () => {
+  for (const name of ['report.pdf', 'table.xlsx', 'notes.docx', 'slides.pptx', 'chart.html', 'bad.<img src=x onerror=alert(1)>']) {
+    const icon = renderArtifactFileIcon(name)
+    const html = renderArtifactReference({ href: 'sandbox:' + name, artifacts: [{ index: 3, file_name: name }], labels })
+    assert.ok(html?.includes(icon))
+    assert.ok(html?.includes('data-artifact-index="3"'))
+    assert.doesNotMatch(icon, /<img|onerror/)
+    assert.doesNotMatch(html!, /<img src=x/)
+  }
+  assert.match(renderArtifactFileIcon('report.pdf'), /kind-file-pdf/)
+  assert.match(renderArtifactFileIcon('report.pdf'), />PDF<\/text>/)
+})
 
 // 22 位句柄，与后端 types.ResourceHandleLength 一致。
 const handleFor = (i: number) => `art${i}`.padEnd(22, 'x')
@@ -139,6 +156,16 @@ test('after the turn ends an unresolved reference says so instead of hanging', (
   assert.ok(!html?.includes('role="button"'))
 })
 
+test('an empty image destination is skipped instead of rendering a broken img', () => {
+  const html = renderArtifactReference({
+    href: '',
+    alt: '根目录示例文件',
+    artifacts: [],
+    labels,
+  })
+  assert.equal(html, '')
+})
+
 test('file names with spaces and parentheses resolve end to end', () => {
   const raw = '![成交量](sandbox:腾讯控股(00700) 成交量_838ccc.html)'
   const normalized = normalizeSandboxArtifactRefs(raw)
@@ -188,4 +215,75 @@ test('artifact names are HTML-escaped', () => {
   })
   assert.ok(!html?.includes('<img src=x'))
   assert.ok(html?.includes('&lt;img'))
+})
+
+test('a deleted artifact renders as a greyed, non-clickable card', () => {
+  const html = renderArtifactReference({
+    href: refFor(0),
+    alt: '市场画像评分',
+    artifacts: artifacts.map((a, i) =>
+      i === 0 ? { ...a, deleted_at: '2026-09-20T02:00:00Z' } : a,
+    ),
+    labels,
+  })
+  assert.ok(html?.includes('artifact-ref-card--deleted'))
+  assert.ok(html?.includes('文件已删除'))
+  assert.ok(html?.includes('市场画像评分_e7edba.html'), 'the name still says which file it was')
+  // Not clickable: the bytes are gone, so opening the preview would 404.
+  assert.ok(!html?.includes('data-artifact-index'))
+  assert.ok(!html?.includes('role="button"'))
+  // And distinguishable from a reference that never resolved at all.
+  assert.ok(!html?.includes('artifact-ref-card--pending'))
+})
+
+test('a deleted image artifact degrades to the card instead of a broken img', () => {
+  // renderImage would emit a placeholder that hydrateArtifactImages then fails
+  // to fill, leaving a permanently blank image in the answer.
+  const html = renderArtifactReference({
+    href: refFor(1),
+    alt: '走势',
+    artifacts: artifacts.map((a, i) =>
+      i === 1 ? { ...a, deleted_at: '2026-09-20T02:00:00Z' } : a,
+    ),
+    labels,
+  })
+  assert.ok(html?.includes('artifact-ref-card--deleted'))
+  assert.ok(!html?.includes('artifact-ref-image'))
+  assert.ok(!html?.includes('<img'))
+})
+
+test('a deleted artifact is not mistaken for a foreign handle', () => {
+  // Dropping tombstones before rendering would make the handle unresolvable,
+  // and an unresolved handle falls through to protected-image rendering — a
+  // broken image rather than an honest "deleted" card.
+  const live = artifacts.filter((_, i) => i !== 0)
+  assert.equal(renderArtifactReference({ href: refFor(0), artifacts: live, labels }), null)
+})
+
+
+test('parent Markdown links render as file cards with exact child indices, including refreshed metadata', () => {
+  const renderer = new marked.Renderer()
+  let files: ArtifactRefMeta[] = []
+  installArtifactLinkRenderer(renderer, () => ({ artifacts: files, labels }))
+  const body = `[开书设定](${refFor(0)})\n\n[文件](${refFor(1)})\n\n[网页](https://example.com)`
+  const render = () => renderChatMarkdown(body, {
+    renderer, escapeMarkdown: text => text, sanitizeHtml: html => html,
+  })
+  assert.doesNotMatch(render(), /data-artifact-index/)
+  files = [
+    { index: 0, handle: refFor(0), file_name: '开书设定.md', file_type: '.md' },
+    { index: 1, handle: refFor(1), file_name: '开书设定.md', file_type: '.md' },
+  ]
+  const html = render()
+  assert.match(html, /data-artifact-index="0"/)
+  assert.match(html, /data-artifact-index="1"/)
+  assert.equal((html.match(/点击预览/g) || []).length, 2)
+  assert.match(html, /href="https:\/\/example.com"/)
+  assert.doesNotMatch(html, /href="resource:/)
+  files = files.map(({ handle, ...file }) => ({ ...file, url: handle }))
+  assert.equal(render(), html, 'history URL metadata and live handle metadata render identically')
+  files[0].deleted_at = '2026-10-18'
+  assert.match(render(), /文件已删除/)
+  assert.doesNotMatch(render(), /data-artifact-index="0"/)
+  assert.match(render(), /data-artifact-index="1"/)
 })

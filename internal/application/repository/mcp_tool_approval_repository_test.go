@@ -2,12 +2,12 @@ package repository
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -15,9 +15,15 @@ import (
 
 func newMCPToolApprovalTestRepo(t *testing.T) interfaces.MCPToolApprovalRepository {
 	t.Helper()
-	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared&_busy_timeout=5000", t.Name())
+	dsn := "file:" + uuid.NewString() + "?mode=memory&cache=shared&_busy_timeout=5000"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	// Match the production SQLite pool: concurrent callers share one connection.
+	// A busy timeout cannot resolve shared-cache SQLITE_LOCKED table conflicts.
+	sqlDB.SetMaxOpenConns(1)
 	require.NoError(t, db.AutoMigrate(&types.MCPToolApproval{}))
 	return NewMCPToolApprovalRepository(db)
 }
@@ -98,15 +104,19 @@ func TestMCPToolApprovalConcurrentColumnPatches(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
+	start := make(chan struct{})
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		<-start
 		errs <- repo.UpsertPolicy(ctx, 1, "svc", "tool", types.MCPToolPolicyPatch{Enabled: boolPtr(false)})
 	}()
 	go func() {
 		defer wg.Done()
+		<-start
 		errs <- repo.UpsertPolicy(ctx, 1, "svc", "tool", types.MCPToolPolicyPatch{RequireApproval: boolPtr(true)})
 	}()
+	close(start)
 	wg.Wait()
 	close(errs)
 	for err := range errs {
@@ -119,4 +129,49 @@ func TestMCPToolApprovalConcurrentColumnPatches(t *testing.T) {
 	required, err := repo.IsRequired(ctx, 1, "svc", "tool")
 	require.NoError(t, err)
 	require.True(t, required)
+}
+
+func TestMCPToolApprovalObservedRiskOnlyRises(t *testing.T) {
+	repo := newMCPToolApprovalTestRepo(t)
+	ctx := context.Background()
+	observe := func(risk string) string {
+		require.NoError(t, repo.UpsertPolicy(ctx, 1, "svc", "tool", types.MCPToolPolicyPatch{ObservedRisk: &risk}))
+		row, err := repo.Get(ctx, 1, "svc", "tool")
+		require.NoError(t, err)
+		return row.ObservedRisk
+	}
+	require.Equal(t, "read", observe("read"), "the first observation is recorded")
+	require.Equal(t, "write", observe("write"))
+	require.Equal(t, "write", observe("read"), "a stale lower observation does not lower it")
+	require.Equal(t, "write", observe("probe"))
+	require.Equal(t, "destructive", observe("destructive"))
+}
+
+func TestMCPToolApprovalConcurrentObservationsKeepTheHighest(t *testing.T) {
+	repo := newMCPToolApprovalTestRepo(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, 20)
+	for i := range 20 {
+		risk := "read"
+		if i == 7 {
+			risk = "write"
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- repo.UpsertPolicy(ctx, 1, "svc", "tool", types.MCPToolPolicyPatch{ObservedRisk: &risk})
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	row, err := repo.Get(ctx, 1, "svc", "tool")
+	require.NoError(t, err)
+	require.Equal(t, "write", row.ObservedRisk)
 }

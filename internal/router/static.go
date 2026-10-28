@@ -36,12 +36,26 @@ func serveFrontendStatic(r *gin.Engine) {
 			c.Next()
 			return
 		}
-		path := c.Request.URL.Path
-		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/health") || strings.HasPrefix(path, "/swagger/") ||
-			strings.HasPrefix(path, "/r/") || path == "/files" {
+		// Gin resolves registered routes before middleware; preserve their auth and handlers.
+		if c.FullPath() != "" {
 			c.Next()
 			return
 		}
+		path := c.Request.URL.Path
+		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/health") || strings.HasPrefix(path, "/swagger/") ||
+			strings.HasPrefix(path, "/mcp/") || strings.HasPrefix(path, "/r/") || path == "/files" {
+			c.Next()
+			return
+		}
+		// Embed pages need the dedicated entry point and the channel CSP set by
+		// embedFrameAncestorsMiddleware. Keep the main SPA same-origin only.
+		if strings.HasPrefix(path, "/embed/") {
+			c.File(filepath.Join(absDir, "embed.html"))
+			c.Abort()
+			return
+		}
+		c.Header("X-Frame-Options", "SAMEORIGIN")
+		c.Header("Content-Security-Policy", "frame-ancestors 'self'")
 		fullPath := filepath.Join(absDir, path)
 		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
 			setFrontendCacheHeaders(c.Writer, path)

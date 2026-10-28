@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,32 +12,58 @@ import (
 
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/sandbox"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
 // SkillCatalogInstallView is one installation of a catalog skill onto a sandbox.
 type SkillCatalogInstallView struct {
-	SkillID           string    `json:"skill_id"`
-	SandboxConfigID   string    `json:"sandbox_config_id"`
-	SandboxConfigName string    `json:"sandbox_config_name,omitempty"`
-	SandboxType       string    `json:"sandbox_type,omitempty"`
-	Status            string    `json:"status"`
-	Enabled           bool      `json:"enabled"`
-	Error             string    `json:"error,omitempty"`
-	BundleSHA256      string    `json:"bundle_sha256,omitempty"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	SkillID           string `json:"skill_id"`
+	SandboxConfigID   string `json:"sandbox_config_id"`
+	SandboxConfigName string `json:"sandbox_config_name,omitempty"`
+	SandboxType       string `json:"sandbox_type,omitempty"`
+	Status            string `json:"status"`
+	Enabled           bool   `json:"enabled"`
+	Error             string `json:"error,omitempty"`
+	Version           string `json:"version,omitempty"`
+	BundleSHA256      string `json:"bundle_sha256,omitempty"`
+	// Served is set while a newer install of this skill is in flight or has
+	// failed and the image still runs the previous version.
+	Served    *SkillServedInfo `json:"served,omitempty"`
+	UpdatedAt time.Time        `json:"updated_at"`
+}
+
+// SkillServedInfo tells the console that a previous version of a skill keeps
+// running while the row describes an install that has not replaced it.
+type SkillServedInfo struct {
+	Version string `json:"version,omitempty"`
+}
+
+// ServedInfoOf reports the previous version a row is still serving, or nil
+// when the row itself is what runs or nothing does.
+func ServedInfoOf(row *types.TenantSkillEntity) *SkillServedInfo {
+	if row == nil || row.Status == types.SkillStatusReady {
+		return nil
+	}
+	view := row.ServedView()
+	if view == nil {
+		return nil
+	}
+	return &SkillServedInfo{Version: view.Version}
 }
 
 // SkillCatalogView is a tenant skill definition plus its sandbox installations.
 type SkillCatalogView struct {
-	ID            string                    `json:"id"`
-	Name          string                    `json:"name"`
-	Version       string                    `json:"version,omitempty"`
-	Description   string                    `json:"description,omitempty"`
+	ID            string                    `json:"id" extensions:"x-agent=catalog_skill_id"`
+	Name          string                    `json:"name" extensions:"x-agent"`
+	Version       string                    `json:"version,omitempty" extensions:"x-agent"`
+	Description   string                    `json:"description,omitempty" extensions:"x-agent"`
 	BundleSHA256  string                    `json:"bundle_sha256,omitempty"`
 	CreatedAt     time.Time                 `json:"created_at"`
 	UpdatedAt     time.Time                 `json:"updated_at"`
 	Installations []SkillCatalogInstallView `json:"installations"`
+	// InstalledOn lists the sandbox config ids of Installations.
+	InstalledOn []string `json:"installed_on" extensions:"x-agent"`
 }
 
 // ListCatalog returns every workspace skill definition and which sandbox
@@ -71,6 +98,9 @@ func (s *TenantSkillService) ListCatalog(
 	unattached := make([]*types.TenantSkillEntity, 0)
 	for _, row := range installs {
 		if row == nil {
+			continue
+		}
+		if s.host.Desktop && !sandbox.IsHostSkillTarget(row.SandboxConfigID) {
 			continue
 		}
 		if row.CatalogID != "" {
@@ -120,6 +150,13 @@ func (s *TenantSkillService) ListCatalog(
 		}
 		out = append(out, catalogView(synthetic, []*types.TenantSkillEntity{row}, configByID))
 	}
+	for i := range out {
+		for _, install := range out[i].Installations {
+			if !slices.Contains(out[i].InstalledOn, install.SandboxConfigID) {
+				out[i].InstalledOn = append(out[i].InstalledOn, install.SandboxConfigID)
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -154,8 +191,15 @@ func installView(
 		Status:          row.Status,
 		Enabled:         row.Enabled,
 		Error:           row.Error,
+		Version:         row.Version,
 		BundleSHA256:    row.BundleSHA256,
+		Served:          ServedInfoOf(row),
 		UpdatedAt:       row.UpdatedAt,
+	}
+	if sandbox.IsHostSkillTarget(row.SandboxConfigID) {
+		v.SandboxConfigName = hostSkillTargetName
+		v.SandboxType = string(sandbox.SandboxTypeHost)
+		return v
 	}
 	if cfg := configByID[row.SandboxConfigID]; cfg != nil {
 		v.SandboxConfigName = cfg.Name
@@ -221,7 +265,7 @@ func (s *TenantSkillService) InstallCatalogToConfigs(
 	}
 	var firstErr error
 	for _, configID := range ids {
-		skillID, installErr := s.InstallSkill(ctx, tenantID, configID, archive)
+		skillID, installErr := s.installSkillArchive(ctx, tenantID, configID, archive, skillArchiveStored)
 		if installErr != nil {
 			logger.Warnf(ctx, "[skill] install catalog %s onto config %s failed: %v",
 				catalogID, configID, installErr)
@@ -456,7 +500,15 @@ func (s *TenantSkillService) pinInstallsToReplacedBundle(
 	}
 	keep := false
 	for _, row := range installs {
-		if row == nil || strings.TrimSpace(row.BundleRef) != "" {
+		if row == nil {
+			continue
+		}
+		pinnedServed, err := s.pinServedVersionToReplacedBundle(ctx, catalog, row, oldRef, oldSHA)
+		if err != nil {
+			return true, err
+		}
+		keep = keep || pinnedServed
+		if strings.TrimSpace(row.BundleRef) != "" {
 			continue
 		}
 		if oldSHA == "" {
@@ -476,6 +528,37 @@ func (s *TenantSkillService) pinInstallsToReplacedBundle(
 		keep = true
 	}
 	return keep, nil
+}
+
+// pinServedVersionToReplacedBundle keeps the archive a mid-upgrade install is
+// still serving from. That version is recorded with the object it was read
+// from, but one recorded before this was possible may only name its digest,
+// and is pinned here the same way a row following the catalog is.
+func (s *TenantSkillService) pinServedVersionToReplacedBundle(
+	ctx context.Context, catalog *types.TenantSkillCatalogEntity, row *types.TenantSkillEntity, oldRef, oldSHA string,
+) (bool, error) {
+	served := row.Served
+	if served == nil {
+		return false, nil
+	}
+	if ref := strings.TrimSpace(served.BundleRef); ref != "" {
+		return ref == oldRef, nil
+	}
+	if oldSHA == "" || strings.TrimSpace(served.BundleSHA256) != oldSHA {
+		return false, nil
+	}
+	if err := s.updateSkillFields(ctx, row.TenantID, row.SandboxConfigID, row.ID,
+		func(e *types.TenantSkillEntity) {
+			if e.Served != nil && strings.TrimSpace(e.Served.BundleRef) == "" {
+				pinned := *e.Served
+				pinned.BundleRef = oldRef
+				e.Served = &pinned
+			}
+		}); err != nil {
+		return true, fmt.Errorf("pin the served version of install %s to the replaced archive of catalog %s: %w",
+			row.ID, catalog.ID, err)
+	}
+	return true, nil
 }
 
 func skillUserErrorMessage(err error) string {

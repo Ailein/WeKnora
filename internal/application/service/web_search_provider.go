@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	infra_web_search "github.com/Tencent/WeKnora/internal/infrastructure/web_search"
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -34,12 +35,6 @@ func (s *webSearchProviderService) CreateProvider(ctx context.Context, provider 
 		return err
 	}
 
-	if provider.IsDefault {
-		if err := s.repo.ClearDefault(ctx, provider.TenantID, ""); err != nil {
-			logger.Warnf(ctx, "Failed to clear default providers: %v", err)
-		}
-	}
-
 	logger.Infof(ctx, "Creating web search provider: tenant=%d, name=%s, type=%s", provider.TenantID, provider.Name, provider.Provider)
 	return s.repo.Create(ctx, provider)
 }
@@ -53,12 +48,6 @@ func (s *webSearchProviderService) UpdateProvider(ctx context.Context, provider 
 	// Validate provider type if set
 	if provider.Provider != "" && !isValidProviderType(provider.Provider) {
 		return fmt.Errorf("invalid provider type: %s", provider.Provider)
-	}
-
-	if provider.IsDefault {
-		if err := s.repo.ClearDefault(ctx, provider.TenantID, provider.ID); err != nil {
-			logger.Warnf(ctx, "Failed to clear default providers: %v", err)
-		}
 	}
 
 	if provider.Provider != "" {
@@ -129,7 +118,7 @@ func (s *webSearchProviderService) DeleteProvider(ctx context.Context, tenantID 
 // isValidProviderType checks if the given provider type is supported
 func isValidProviderType(provider types.WebSearchProviderType) bool {
 	switch provider {
-	case types.WebSearchProviderTypeBing,
+	case types.WebSearchProviderTypeBrave, types.WebSearchProviderTypeBing,
 		types.WebSearchProviderTypeGoogle,
 		types.WebSearchProviderTypeDuckDuckGo,
 		types.WebSearchProviderTypeTavily,
@@ -139,7 +128,9 @@ func isValidProviderType(provider types.WebSearchProviderType) bool {
 		types.WebSearchProviderTypeKeenable,
 		types.WebSearchProviderTypeMetaso,
 		types.WebSearchProviderTypeZhipu,
-		types.WebSearchProviderTypeExa:
+		types.WebSearchProviderTypeExa,
+		types.WebSearchProviderTypeBocha,
+		types.WebSearchProviderTypeSerply:
 		return true
 	default:
 		return false
@@ -149,6 +140,14 @@ func isValidProviderType(provider types.WebSearchProviderType) bool {
 // validateProviderParameters validates required parameters for each provider type
 func validateProviderParameters(provider types.WebSearchProviderType, params types.WebSearchProviderParameters) error {
 	switch provider {
+	case types.WebSearchProviderTypeBrave:
+		if strings.TrimSpace(params.APIKey) == "" {
+			return fmt.Errorf("API key is required for Brave provider")
+		}
+	case types.WebSearchProviderTypeSerply:
+		if strings.TrimSpace(params.APIKey) == "" {
+			return fmt.Errorf("API key is required for Serply provider")
+		}
 	case types.WebSearchProviderTypeBing:
 		if params.APIKey == "" {
 			return fmt.Errorf("API key is required for Bing provider")
@@ -184,6 +183,10 @@ func validateProviderParameters(provider types.WebSearchProviderType, params typ
 		if err := infra_web_search.ValidateMetasoParameters(params); err != nil {
 			return err
 		}
+	case types.WebSearchProviderTypeBocha:
+		if err := infra_web_search.ValidateBochaParameters(params); err != nil {
+			return err
+		}
 	case types.WebSearchProviderTypeDuckDuckGo:
 		// No API key required
 	case types.WebSearchProviderTypeKeenable:
@@ -201,4 +204,20 @@ func validateProviderParameters(provider types.WebSearchProviderType, params typ
 
 func validateOptionalProxyURL(proxyURL string) error {
 	return infra_web_search.ValidateProxyURL(proxyURL)
+}
+
+// PatchProviderSettings validates the saved provider but writes only selected settings.
+func (s *webSearchProviderService) PatchProviderSettings(
+	ctx context.Context, provider *types.WebSearchProviderEntity, fields []string,
+) error {
+	if provider == nil || provider.TenantID == 0 {
+		return fmt.Errorf("tenant ID is required")
+	}
+	if !isValidProviderType(provider.Provider) {
+		return fmt.Errorf("invalid provider type: %s", provider.Provider)
+	}
+	if err := validateProviderParameters(provider.Provider, provider.Parameters); err != nil {
+		return err
+	}
+	return s.repo.PatchSettings(ctx, provider, fields)
 }

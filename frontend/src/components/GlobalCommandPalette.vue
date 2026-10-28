@@ -1,6 +1,6 @@
 <template>
   <t-dialog v-model:visible="dialogVisible" :footer="false" :header="false" :close-btn="false" width="640px" top="10vh"
-    destroy-on-close class="cmdk-dialog" @close="handleClose" @opened="onDialogOpened">
+    :close-on-esc="!settingsVisible" destroy-on-close class="cmdk-dialog" @close="handleClose" @opened="onDialogOpened">
     <div class="cmdk" @keydown="onKeyDown">
       <!-- Input row -->
       <div class="cmdk__input-row">
@@ -19,11 +19,24 @@
         <span v-if="loading" class="cmdk__input-spinner">
           <t-loading size="small" />
         </span>
-        <t-tooltip :content="t('commandPalette.retrieval')" placement="bottom">
-          <button type="button" class="cmdk__icon-btn" :class="{ active: drawerVisible }" @click="drawerVisible = true">
+        <t-popup v-model:visible="settingsVisible" trigger="click" placement="bottom-right"
+          overlay-class-name="cmdk-settings-popup" :overlay-inner-style="{ padding: '0' }" :z-index="3100">
+          <button type="button" class="cmdk__icon-btn" :class="{ active: settingsVisible }"
+            :title="t('commandPalette.retrieval')" :aria-label="t('retrievalSettings.title')"
+            aria-haspopup="dialog" :aria-expanded="settingsVisible">
             <t-icon name="setting" size="16px" />
           </button>
-        </t-tooltip>
+          <template #content>
+            <div class="cmdk-settings-popover" role="dialog" :aria-label="t('retrievalSettings.title')"
+              @keydown.stop @keydown.esc.prevent="settingsVisible = false">
+              <button type="button" class="cmdk__icon-btn cmdk-settings-popover__close"
+                :aria-label="t('commandPalette.hotkey.esc')" @click="settingsVisible = false">
+                <t-icon name="close" size="16px" />
+              </button>
+              <RetrievalSettings />
+            </div>
+          </template>
+        </t-popup>
         <button type="button" class="cmdk__icon-btn" :aria-label="t('commandPalette.hotkey.esc')" @click="handleClose">
           <t-icon name="close" size="16px" />
         </button>
@@ -130,7 +143,7 @@
                 <template #icon><t-icon name="chat" size="14px" /></template>
                 {{ t('commandPalette.empty.askAi') }}
               </t-button>
-              <t-button variant="outline" size="small" @click="drawerVisible = true">
+              <t-button variant="outline" size="small" @click="settingsVisible = true">
                 <template #icon><t-icon name="setting" size="14px" /></template>
                 {{ t('commandPalette.empty.adjustRetrieval') }}
               </t-button>
@@ -150,11 +163,6 @@
       </div>
     </div>
 
-    <!-- Retrieval settings drawer (layered on top of the palette) -->
-    <t-drawer v-model:visible="drawerVisible" :header="t('retrievalSettings.title')" size="420px" :footer="false"
-      :close-on-overlay-click="true" class="cmdk-retrieval-drawer">
-      <RetrievalSettings />
-    </t-drawer>
   </t-dialog>
 </template>
 
@@ -205,7 +213,7 @@ const {
   agentsEnabled: () => deploymentCapabilities.isSupported('agents'),
 })
 
-const drawerVisible = ref(false)
+const settingsVisible = ref(false)
 const inputRef = ref<HTMLInputElement | null>(null)
 const scrollRef = ref<HTMLElement | null>(null)
 
@@ -499,6 +507,11 @@ const shortcutFor = (flatIndex: number): number | undefined => {
 }
 
 const onKeyDown = (e: KeyboardEvent) => {
+  if (settingsVisible.value && e.key === 'Escape') {
+    e.preventDefault()
+    settingsVisible.value = false
+    return
+  }
   if (e.key === 'ArrowDown') {
     e.preventDefault()
     moveSelection(1)
@@ -542,7 +555,7 @@ const onInputKeyDown = (e: KeyboardEvent) => {
 }
 
 const handleClose = () => {
-  drawerVisible.value = false
+  settingsVisible.value = false
   commandPaletteStore.closePalette()
 }
 
@@ -599,7 +612,7 @@ watch(open, (val) => {
   } else {
     clearResults()
     query.value = ''
-    drawerVisible.value = false
+    settingsVisible.value = false
     activeKbScope.value = null
   }
 })
@@ -672,7 +685,7 @@ onUnmounted(() => {
 
 .cmdk__input-icon {
   color: var(--td-text-color-placeholder);
-  font-size: 16px;
+  font-size: var(--app-text-xl);
 }
 
 .cmdk__scope-chip {
@@ -684,8 +697,8 @@ onUnmounted(() => {
   padding: 0 2px 0 8px;
   background: var(--td-bg-color-secondarycontainer);
   color: var(--td-text-color-primary);
-  border-radius: 4px;
-  font-size: 12px;
+  border-radius: var(--app-radius-xs);
+  font-size: var(--app-text-sm);
   font-weight: 500;
   flex-shrink: 0;
 
@@ -731,7 +744,7 @@ onUnmounted(() => {
   border: none;
   outline: none;
   background: transparent;
-  font-size: 15px;
+  font-size: var(--app-text-lg);
   color: var(--td-text-color-primary);
   font-family: inherit;
 
@@ -752,7 +765,7 @@ onUnmounted(() => {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--td-text-color-secondary);
   cursor: pointer;
@@ -779,7 +792,7 @@ onUnmounted(() => {
   gap: 12px;
   padding: 40px 20px 20px;
   color: var(--td-text-color-placeholder);
-  font-size: 13px;
+  font-size: var(--app-text-md);
 
   p {
     margin: 0;
@@ -796,7 +809,7 @@ onUnmounted(() => {
   gap: 16px;
   padding: 8px 14px;
   border-top: 1px solid var(--td-component-stroke);
-  font-size: 11px;
+  font-size: var(--app-text-xs);
   color: var(--td-text-color-placeholder);
   flex-wrap: wrap;
 }
@@ -810,7 +823,7 @@ onUnmounted(() => {
     display: inline-block;
     padding: 1px 5px;
     min-width: 16px;
-    font-size: 10px;
+    font-size: var(--app-text-2xs);
     font-family: inherit;
     line-height: 14px;
     text-align: center;
@@ -822,7 +835,7 @@ onUnmounted(() => {
 }
 
 .cmdk-chunk-kb {
-  font-size: 11px;
+  font-size: var(--app-text-xs);
   color: var(--td-text-color-placeholder);
   padding: 1px 6px;
   background: var(--td-bg-color-secondarycontainer);
@@ -839,7 +852,7 @@ onUnmounted(() => {
   display: inline-block;
   margin-right: 6px;
   padding: 0 5px;
-  font-size: 10px;
+  font-size: var(--app-text-2xs);
   font-weight: 600;
   background: var(--td-bg-color-secondarycontainer);
   color: var(--td-text-color-secondary);
@@ -860,9 +873,24 @@ onUnmounted(() => {
   }
 }
 
-.cmdk-retrieval-drawer {
-  .section-header {
-    font-weight: 600;
-  }
+.cmdk-settings-popover {
+  position: relative;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(680px, calc(100dvh - 140px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+  padding: 12px 14px 14px;
+  &__close { position: absolute; top: 12px; right: 12px; }
+}
+</style>
+
+<style lang="less">
+.cmdk-settings-popup .t-popup__content {
+  border-radius: var(--app-radius-xl);
+  background: var(--td-bg-color-container);
+  border: 0.5px solid var(--td-component-stroke);
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.03), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
 }
 </style>

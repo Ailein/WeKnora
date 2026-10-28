@@ -15,9 +15,9 @@ func TestSkillDirFor(t *testing.T) {
 	require.Equal(t, "/opt/weknora/tenant/skills/sk-1", dir)
 }
 
-func TestSessionSkillPackageDir(t *testing.T) {
-	require.Equal(t, "/workspace/.skill-packages/律师助手", SessionSkillPackageDir("律师助手"))
-	require.Equal(t, "/workspace/.skill-packages", SessionSkillPackageDir("../escape"))
+func TestSkillVenvPython(t *testing.T) {
+	require.Equal(t, "/opt/weknora/tenant/skills/律师助手/.venv/bin/python",
+		SkillVenvPython(SkillsImageRoot+"/律师助手"))
 }
 
 func TestSkillDirForRejectsPathEscape(t *testing.T) {
@@ -229,4 +229,55 @@ print("\n".join(sys.argv[1:]))
 	output, err := exec.Command(cmd, args...).CombinedOutput()
 	require.NoError(t, err, string(output))
 	require.Equal(t, "--first\nvalue\n--third\n", string(output))
+}
+
+func TestIsHostSkillTarget(t *testing.T) {
+	require.True(t, IsHostSkillTarget("host"))
+	require.True(t, IsHostSkillTarget(" host "))
+	require.False(t, IsHostSkillTarget(""))
+	require.False(t, IsHostSkillTarget("HOST"))
+	require.False(t, IsHostSkillTarget("0b2f0c56-7a52-4a26-9d61-3a8c3d5ce1f1"))
+}
+
+func TestSkillDirUnderJoinsOneSegment(t *testing.T) {
+	dir, err := SkillDirUnder("/Users/dev/.weknora/skills", "pdf")
+	require.NoError(t, err)
+	require.Equal(t, "/Users/dev/.weknora/skills/pdf", dir)
+
+	_, err = SkillDirUnder("/Users/dev/.weknora/skills", "../pdf")
+	require.ErrorIs(t, err, ErrInvalidSkillName)
+	_, err = SkillDirUnder("", "pdf")
+	require.Error(t, err)
+	_, err = SkillDirUnder("relative/root", "pdf")
+	require.Error(t, err)
+	_, err = SkillDirUnder("/", "pdf")
+	require.Error(t, err)
+}
+
+func TestValidatedSkillDirUnderRejectsOtherRoots(t *testing.T) {
+	root := "/Users/dev/.weknora/skills/.versions"
+	got, ok := ValidatedSkillDirUnder(root, root+"/pdf-3")
+	require.True(t, ok)
+	require.Equal(t, root+"/pdf-3", got)
+
+	_, ok = ValidatedSkillDirUnder(root, SkillsImageRoot+"/pdf")
+	require.False(t, ok)
+	_, ok = ValidatedSkillDirUnder(root, root)
+	require.False(t, ok)
+	_, ok = ValidatedSkillDirUnder(root, root+"/pdf-3/scripts")
+	require.False(t, ok)
+}
+
+func TestImageSkillHelpersKeepTheImageRoot(t *testing.T) {
+	dir, err := SkillDirFor("pdf")
+	require.NoError(t, err)
+	require.Equal(t, SkillsImageRoot+"/pdf", dir)
+
+	got, ok := ValidatedImageSkillDir(SkillsImageRoot + "/pdf")
+	require.True(t, ok)
+	require.Equal(t, SkillsImageRoot+"/pdf", got)
+
+	require.Equal(t, SkillsImageRoot+"/pdf/.weknora/requirements.json", SkillRequirementsPath("pdf"))
+	require.Equal(t, "/x/pdf-1/.weknora/requirements.json", SkillRequirementsPathIn("/x/pdf-1"))
+	require.Equal(t, "", SkillRequirementsPathIn(" "))
 }

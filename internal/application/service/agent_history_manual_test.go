@@ -6,45 +6,31 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
-	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// fakeHistoryMessageRepo serves a fixed message list; every other repository
-// method panics via the embedded nil interface.
-type fakeHistoryMessageRepo struct {
-	interfaces.MessageRepository
-	rows []*types.Message
-}
-
-func (f *fakeHistoryMessageRepo) GetRecentMessagesBySession(
-	_ context.Context, _ string, _ int,
-) ([]*types.Message, error) {
-	return f.rows, nil
-}
-
 // TestLoadAgentHistory_AppendsManualReplies verifies that operator manual
 // replies (channel im_manual, no paired user message) are folded into the
 // preceding turn's final answer with the operator prefix, media are summarized
-// as text, and a reply older than every retained turn is dropped rather than
+// as text, and a reply older than every replayed turn is dropped rather than
 // emitted as a leading assistant message.
 func TestLoadAgentHistory_AppendsManualReplies(t *testing.T) {
 	base := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	rows := []*types.Message{
-		{Role: "assistant", RequestID: "m0", Channel: types.ChannelIMManual, IsCompleted: true,
+		{ID: "m0", Role: "assistant", RequestID: "m0", Channel: types.ChannelIMManual, IsCompleted: true,
 			Content: "开场人工", CreatedAt: base.Add(-time.Minute)},
-		{Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
-		{Role: "assistant", RequestID: "r1", Content: "回答一", IsCompleted: true, CreatedAt: base.Add(time.Second)},
-		{Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
+		{ID: "u1", Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
+		{ID: "a1", Role: "assistant", RequestID: "r1", Content: "回答一", IsCompleted: true, CreatedAt: base.Add(time.Second)},
+		{ID: "m1", Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
 			Content:   "人工补充",
 			Images:    types.MessageImages{{URL: "data:image/png;base64,xx"}},
 			CreatedAt: base.Add(2 * time.Second)},
-		{Role: "user", RequestID: "r2", Content: "问题二", CreatedAt: base.Add(3 * time.Second)},
-		{Role: "assistant", RequestID: "r2", Content: "回答二", IsCompleted: true, CreatedAt: base.Add(4 * time.Second)},
+		{ID: "u2", Role: "user", RequestID: "r2", Content: "问题二", CreatedAt: base.Add(3 * time.Second)},
+		{ID: "a2", Role: "assistant", RequestID: "r2", Content: "回答二", IsCompleted: true, CreatedAt: base.Add(4 * time.Second)},
 	}
 
-	got, err := LoadAgentHistory(context.Background(), &fakeHistoryMessageRepo{rows: rows}, "s1", 10)
+	got, _, err := LoadAgentHistory(context.Background(), &historyRepo{rows: rows}, "s1", unlimitedBudget, false)
 	require.NoError(t, err)
 	require.Len(t, got, 4)
 
@@ -60,25 +46,36 @@ func TestLoadAgentHistory_AppendsManualReplies(t *testing.T) {
 }
 
 // TestLoadAgentHistory_ManualReplyOutsideWindowDropped covers truncation: when
-// maxRounds cuts off the turn a manual reply belongs to, the reply must not be
+// the turn a manual reply belongs to is not replayed (covered by a context
+// checkpoint, or left out for the token budget), the reply must not be
 // re-attached to a later turn (that would reorder the conversation) — it is
 // dropped together with its turn.
 func TestLoadAgentHistory_ManualReplyOutsideWindowDropped(t *testing.T) {
 	base := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	rows := []*types.Message{
-		{Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
-		{Role: "assistant", RequestID: "r1", Content: "回答一", IsCompleted: true, CreatedAt: base.Add(time.Second)},
-		{Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
+		{ID: "u1", Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
+		{ID: "a1", Role: "assistant", RequestID: "r1", Content: "回答一", IsCompleted: true, CreatedAt: base.Add(time.Second)},
+		{ID: "m1", Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
 			Content: "人工补充", CreatedAt: base.Add(2 * time.Second)},
-		{Role: "user", RequestID: "r2", Content: "问题二", CreatedAt: base.Add(3 * time.Second)},
-		{Role: "assistant", RequestID: "r2", Content: "回答二", IsCompleted: true, CreatedAt: base.Add(4 * time.Second)},
+		{ID: "u2", Role: "user", RequestID: "r2", Content: "问题二", CreatedAt: base.Add(3 * time.Second)},
+		{ID: "a2", Role: "assistant", RequestID: "r2", Content: "回答二", IsCompleted: true, CreatedAt: base.Add(4 * time.Second)},
 	}
 
-	got, err := LoadAgentHistory(context.Background(), &fakeHistoryMessageRepo{rows: rows}, "s1", 1)
+	// The budget keeps only the newest turn.
+	got, _, err := LoadAgentHistory(context.Background(), &historyRepo{rows: rows}, "s1", 1, false)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, "问题二", got[0].Content)
 	assert.Equal(t, "回答二", got[1].Content)
+
+	// A checkpoint on the first turn covers it, and with it the reply.
+	got, _, err = LoadAgentHistory(context.Background(),
+		&historyRepo{rows: rows, checkpoint: checkpointOn(rows[1], "摘要")}, "s1", unlimitedBudget, false)
+	require.NoError(t, err)
+	for _, m := range got {
+		assert.NotContains(t, m.Content, "人工补充")
+	}
+	assert.Equal(t, []string{"问题二"}, questions(got))
 }
 
 // TestLoadAgentHistory_ManualReplyWithEmptyFinalAnswer covers the edge where
@@ -87,16 +84,39 @@ func TestLoadAgentHistory_ManualReplyOutsideWindowDropped(t *testing.T) {
 func TestLoadAgentHistory_ManualReplyWithEmptyFinalAnswer(t *testing.T) {
 	base := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
 	rows := []*types.Message{
-		{Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
-		{Role: "assistant", RequestID: "r1", Content: "", IsCompleted: true, CreatedAt: base.Add(time.Second)},
-		{Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
+		{ID: "u1", Role: "user", RequestID: "r1", Content: "问题一", CreatedAt: base},
+		{ID: "a1", Role: "assistant", RequestID: "r1", Content: "", IsCompleted: true, CreatedAt: base.Add(time.Second)},
+		{ID: "m1", Role: "assistant", RequestID: "m1", Channel: types.ChannelIMManual, IsCompleted: true,
 			Content: "人工顶上", CreatedAt: base.Add(2 * time.Second)},
 	}
 
-	got, err := LoadAgentHistory(context.Background(), &fakeHistoryMessageRepo{rows: rows}, "s1", 10)
+	got, _, err := LoadAgentHistory(context.Background(), &historyRepo{rows: rows}, "s1", unlimitedBudget, false)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, "问题一", got[0].Content)
 	assert.Equal(t, "assistant", got[1].Role)
 	assert.Equal(t, "[人工客服回复] 人工顶上", got[1].Content)
+	assert.Equal(t, "a1", got[1].TurnID, "the reply rides on its turn for checkpointing")
+}
+
+// TestLoadAgentHistory_SideNotesAcrossPages pins the paging argument behind
+// sideNoteSuffix: a turn's notes are all read by the time the turn is
+// complete, even when the read spans several pages.
+func TestLoadAgentHistory_SideNotesAcrossPages(t *testing.T) {
+	rows := storedTurns(agentHistoryPageSize) // fills more than one page
+	last := rows[len(rows)-1]
+	rows = append(rows, &types.Message{
+		ID: "m-last", Role: "assistant", RequestID: "m-last", Channel: types.ChannelIMManual, IsCompleted: true,
+		Content: "人工收尾", CreatedAt: last.CreatedAt.Add(time.Second),
+	}, &types.Message{
+		ID: "m-first", Role: "assistant", RequestID: "m-first", Channel: types.ChannelIMManual, IsCompleted: true,
+		Content: "第一轮后的人工", CreatedAt: rows[1].CreatedAt.Add(time.Millisecond),
+	})
+
+	repo := &historyRepo{rows: rows}
+	got, _, err := LoadAgentHistory(context.Background(), repo, "s1", unlimitedBudget, false)
+	require.NoError(t, err)
+	require.Greater(t, repo.pages, 1)
+	assert.Equal(t, "answer 1\n\n[人工客服回复] 第一轮后的人工", got[1].Content)
+	assert.Equal(t, last.Content+"\n\n[人工客服回复] 人工收尾", got[len(got)-1].Content)
 }

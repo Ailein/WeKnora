@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { clampSidebarWidth, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_COLLAPSE_THRESHOLD } from '../utils/sidebarWidth'
 
 export const useUIStore = defineStore('ui', {
   state: () => ({
@@ -15,13 +16,22 @@ export const useUIStore = defineStore('ui', {
     manualEditorVisible: false,
     manualEditorMode: 'create' as 'create' | 'edit',
     manualEditorKBId: null as string | null,
+    // Soft chat preference: resolved against the writable candidate list.
+    manualEditorPreferredKbIds: [] as string[],
     manualEditorKnowledgeId: null as string | null,
     manualEditorInitialTitle: '',
     manualEditorInitialContent: '',
     manualEditorInitialStatus: 'draft' as 'draft' | 'publish',
     manualEditorOnSuccess: null as null | ((payload: { kbId: string; knowledgeId: string; status: 'draft' | 'publish' }) => void),
-    sidebarCollapsed: localStorage.getItem('sidebar_collapsed') === 'true'
+    sidebarCollapsed: localStorage.getItem('sidebar_collapsed') === 'true',
+    sidebarWidth: clampSidebarWidth(Number(localStorage.getItem('sidebar_width'))),
+    sidebarResizing: false,
+    sidebarBrowserStatus: localStorage.getItem('sidebar_browser_status') !== 'false',
   }),
+
+  getters: {
+    sidebarDisplayWidth: (state) => state.sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : state.sidebarWidth,
+  },
 
   actions: {
     openSettings(section?: string, subSection?: string) {
@@ -70,6 +80,8 @@ export const useUIStore = defineStore('ui', {
     openManualEditor(options: {
       mode?: 'create' | 'edit'
       kbId?: string | null
+      /** Soft preference from chat citations; resolved against writable candidates. */
+      preferredKbIds?: string[] | null
       knowledgeId?: string | null
       title?: string
       content?: string
@@ -78,6 +90,9 @@ export const useUIStore = defineStore('ui', {
     } = {}) {
       this.manualEditorMode = options.mode || 'create'
       this.manualEditorKBId = options.kbId ?? null
+      this.manualEditorPreferredKbIds = (options.preferredKbIds || []).filter(
+        (id): id is string => typeof id === 'string' && !!id.trim(),
+      )
       this.manualEditorKnowledgeId = options.knowledgeId ?? null
       this.manualEditorInitialTitle = options.title || ''
       this.manualEditorInitialContent = options.content || ''
@@ -88,6 +103,8 @@ export const useUIStore = defineStore('ui', {
 
     closeManualEditor() {
       this.manualEditorVisible = false
+      this.manualEditorKBId = null
+      this.manualEditorPreferredKbIds = []
       this.manualEditorKnowledgeId = null
       this.manualEditorInitialContent = ''
       this.manualEditorInitialTitle = ''
@@ -120,9 +137,25 @@ export const useUIStore = defineStore('ui', {
       this.selectedTagIds = []
     },
 
+    setSidebarBrowserStatus(visible: boolean) {
+      this.sidebarBrowserStatus = visible
+      localStorage.setItem('sidebar_browser_status', String(visible))
+    },
+
     toggleSidebar() {
       this.sidebarCollapsed = !this.sidebarCollapsed
       localStorage.setItem('sidebar_collapsed', String(this.sidebarCollapsed))
+    },
+
+    resizeSidebar(width: number) {
+      if (!Number.isFinite(width)) return
+      if (width < SIDEBAR_COLLAPSE_THRESHOLD) {
+        this.collapseSidebar()
+        return
+      }
+      this.sidebarWidth = clampSidebarWidth(width)
+      localStorage.setItem('sidebar_width', String(this.sidebarWidth))
+      this.expandSidebar()
     },
 
     collapseSidebar() {
@@ -136,4 +169,3 @@ export const useUIStore = defineStore('ui', {
     }
   }
 })
-

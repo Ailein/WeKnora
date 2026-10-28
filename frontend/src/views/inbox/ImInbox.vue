@@ -590,10 +590,10 @@ onUnmounted(() => {
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 9px;
+  border-radius: var(--app-radius-lg);
   background: #e34d59;
   color: #fff;
-  font-size: 11px;
+  font-size: var(--app-text-xs);
   font-weight: 600;
   line-height: 1;
 }
@@ -616,7 +616,7 @@ onUnmounted(() => {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 16px;
+    font-size: var(--app-text-xl);
     font-weight: 600;
     color: #000000e6;
     margin-bottom: 10px;
@@ -637,12 +637,12 @@ onUnmounted(() => {
 .inbox-filter {
   border: 1px solid #dcdcdc;
   background: #fff;
-  border-radius: 14px;
+  border-radius: var(--app-radius-xl);
   padding: 3px 12px;
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   color: #00000099;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background-color var(--app-motion-fast), color var(--app-motion-fast), border-color var(--app-motion-fast);
 
   &:hover {
     border-color: #07c05f;
@@ -664,14 +664,14 @@ onUnmounted(() => {
   padding: 40px 16px;
   text-align: center;
   color: #00000066;
-  font-size: 13px;
+  font-size: var(--app-text-md);
 }
 
 .inbox-item {
   padding: 10px 16px;
   cursor: pointer;
   border-bottom: 1px solid #f5f5f5;
-  transition: background 0.15s;
+  transition: background var(--app-motion-fast);
 
   &:hover {
     background: #f7f9f8;
@@ -698,7 +698,7 @@ onUnmounted(() => {
   }
 
   &__peer {
-    font-size: 14px;
+    font-size: var(--app-text-base);
     font-weight: 500;
     color: #000000e6;
     overflow: hidden;
@@ -708,7 +708,7 @@ onUnmounted(() => {
 
   &__time {
     flex-shrink: 0;
-    font-size: 11px;
+    font-size: var(--app-text-xs);
     color: #00000066;
   }
 
@@ -721,7 +721,7 @@ onUnmounted(() => {
   }
 
   &__preview {
-    font-size: 12px;
+    font-size: var(--app-text-sm);
     color: #00000099;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -739,8 +739,8 @@ onUnmounted(() => {
 .inbox-tag {
   display: inline-block;
   padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 11px;
+  border-radius: calc(var(--app-radius-sm) / 2);
+  font-size: var(--app-text-xs);
   background: #f3f3f3;
   color: #00000099;
   max-width: 140px;
@@ -779,7 +779,7 @@ onUnmounted(() => {
     align-items: center;
     justify-content: center;
     color: #00000066;
-    font-size: 14px;
+    font-size: var(--app-text-base);
   }
 }
 
@@ -792,7 +792,7 @@ onUnmounted(() => {
   border-bottom: 1px solid #f0f0f0;
 
   &__peer {
-    font-size: 15px;
+    font-size: var(--app-text-lg);
     font-weight: 600;
     color: #000000e6;
   }
@@ -805,7 +805,7 @@ onUnmounted(() => {
   }
 
   &__title {
-    font-size: 12px;
+    font-size: var(--app-text-sm);
     color: #00000066;
     max-width: 260px;
     overflow: hidden;
@@ -857,19 +857,19 @@ onUnmounted(() => {
 
   &__bubble {
     max-width: 72%;
-    border-radius: 8px;
+    border-radius: var(--app-radius-md);
     padding: 8px 12px;
   }
 
   &__channel {
-    font-size: 11px;
+    font-size: var(--app-text-xs);
     color: #07a355;
     margin-bottom: 3px;
     font-weight: 500;
   }
 
   &__content {
-    font-size: 13px;
+    font-size: var(--app-text-md);
     color: #000000e6;
     white-space: pre-wrap;
     word-break: break-word;
@@ -887,10 +887,10 @@ onUnmounted(() => {
 
       :deep(pre) {
         background: #f5f5f5;
-        border-radius: 4px;
+        border-radius: var(--app-radius-xs);
         padding: 8px;
         overflow-x: auto;
-        font-size: 12px;
+        font-size: var(--app-text-sm);
       }
 
       :deep(ul),
@@ -902,7 +902,7 @@ onUnmounted(() => {
   }
 
   &__time {
-    font-size: 10px;
+    font-size: var(--app-text-2xs);
     color: #00000059;
     margin-top: 4px;
     text-align: right;
@@ -938,13 +938,13 @@ onUnmounted(() => {
 .composer-unsupported {
   text-align: center;
   color: #00000066;
-  font-size: 13px;
+  font-size: var(--app-text-md);
   padding: 6px 0;
 }
 
 .quick-reply-editor {
   &__hint {
-    font-size: 12px;
+    font-size: var(--app-text-sm);
     color: #00000099;
     margin-bottom: 8px;
   }

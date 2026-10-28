@@ -40,12 +40,15 @@ AGENT_NAME = "Togather 客服小灵"
 # hostname must be in the app's SSRF_WHITELIST.
 MCP_SERVER_URL = "http://togather-distance:9310/mcp"
 
+# Retrieval tools as named since upstream v0.8.2 (knowledge_search / grep_chunks
+# became search_knowledge; list_knowledge_chunks / get_document_info became
+# read_document). MCP tools are reached through discover_mcp_tools /
+# call_mcp_tool and need no entry here.
 ALLOWED_TOOLS = [
     "thinking",
-    "knowledge_search",
-    "grep_chunks",
-    "list_knowledge_chunks",
-    "get_document_info",
+    "search_knowledge",
+    "read_document",
+    "list_documents",
 ]
 
 

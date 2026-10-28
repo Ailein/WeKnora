@@ -8,19 +8,70 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/Tencent/WeKnora/internal/background"
+	"github.com/Tencent/WeKnora/internal/sandbox/allocation"
+	"github.com/Tencent/WeKnora/internal/sandbox/workspace"
 )
 
-// SessionSandboxBindingVersion is the current persisted binding schema.
+// SessionSandboxBindingVersion is the schema of a per-session machine binding.
 const SessionSandboxBindingVersion = 1
 
-// SessionSandboxKey identifies one tenant-scoped persistent sandbox.
+// UserSandboxBindingVersion is the schema of a shared user machine binding.
+const UserSandboxBindingVersion = 2
+
+// SessionSandboxKey addresses persistent sandbox state.
+//
+// With User zero it is today's per-session key. With User set and SessionID
+// empty it addresses a shared user machine (binding, lifecycle lock); with
+// both set it addresses one session's leases on that machine (turn lease,
+// rewind lock).
 type SessionSandboxKey struct {
 	TenantID  uint64
 	SessionID string
+	User      allocation.UserMachine
 }
 
-// Validate rejects keys that cannot identify a tenant session.
+// IsUserScoped reports a key on a shared user machine.
+func (k SessionSandboxKey) IsUserScoped() bool { return k.User.OwnerID != "" }
+
+// IsUserMachine reports the machine-level key of a shared user machine.
+func (k SessionSandboxKey) IsUserMachine() bool { return k.IsUserScoped() && k.SessionID == "" }
+
+// Machine is the key the binding and the lifecycle lock live under.
+func (k SessionSandboxKey) Machine() SessionSandboxKey {
+	if k.IsUserScoped() {
+		return SessionSandboxKey{TenantID: k.TenantID, User: k.User}
+	}
+	return k
+}
+
+// String identifies the key in logs without the owner id.
+func (k SessionSandboxKey) String() string {
+	if k.IsUserScoped() {
+		if k.SessionID == "" {
+			return fmt.Sprintf("user-machine(tenant=%d,config=%d/%s)",
+				k.TenantID, k.User.ConfigTenantID, k.User.ConfigID)
+		}
+		return fmt.Sprintf("user-session(tenant=%d,session=%s)", k.TenantID, k.SessionID)
+	}
+	return fmt.Sprintf("session(tenant=%d,session=%s)", k.TenantID, k.SessionID)
+}
+
+// Validate rejects keys that cannot address sandbox state.
 func (k SessionSandboxKey) Validate() error {
+	if k.IsUserScoped() {
+		if err := k.User.Validate(); err != nil {
+			return fmt.Errorf("sandbox binding: %w", err)
+		}
+		if k.TenantID != k.User.OwnerTenantID {
+			return errors.New("sandbox binding tenant must be the user machine's owner tenant")
+		}
+		if k.SessionID != "" && !workspace.IsCanonicalUUID(k.SessionID) {
+			return errors.New("sandbox binding session on a user machine must be a canonical UUID")
+		}
+		return nil
+	}
 	if k.TenantID == 0 || strings.TrimSpace(k.SessionID) == "" {
 		return errors.New("sandbox binding requires tenant and session")
 	}
@@ -74,25 +125,41 @@ type SessionSandboxBinding struct {
 	// Empty for Docker (no such credential) and for bindings written before
 	// this field existed; both are valid.
 	TrafficAccessToken string `json:"traffic_access_token,omitempty"`
+
+	// OwnerID and ConfigTenantID complete a user machine's identity
+	// (version 2). Empty on per-session bindings.
+	OwnerID        string `json:"owner_id,omitempty"`
+	ConfigTenantID uint64 `json:"config_tenant_id,omitempty"`
 }
 
-// Validate checks a binding against the current schema and authoritative key.
+// Validate checks a binding against its schema and authoritative key.
 func (b SessionSandboxBinding) Validate(key SessionSandboxKey) error {
 	if err := key.Validate(); err != nil {
 		return err
 	}
-	if b.Version != SessionSandboxBindingVersion {
-		return fmt.Errorf(
-			"sandbox binding version must be %d, got %d",
-			SessionSandboxBindingVersion,
-			b.Version,
-		)
+	if key.IsUserScoped() {
+		if !key.IsUserMachine() {
+			return errors.New("sandbox binding must be addressed by its user machine key")
+		}
+		if b.Version != UserSandboxBindingVersion {
+			return fmt.Errorf("user sandbox binding version must be %d, got %d", UserSandboxBindingVersion, b.Version)
+		}
+		if b.TenantID != key.TenantID || b.SessionID != "" ||
+			b.OwnerID != key.User.OwnerID ||
+			b.ConfigTenantID != key.User.ConfigTenantID ||
+			b.ConfigID != key.User.ConfigID {
+			return errors.New("sandbox binding identity does not match its key")
+		}
+	} else {
+		if b.Version != SessionSandboxBindingVersion {
+			return fmt.Errorf("sandbox binding version must be %d, got %d", SessionSandboxBindingVersion, b.Version)
+		}
+		if b.TenantID != key.TenantID || b.SessionID != key.SessionID {
+			return errors.New("sandbox binding identity does not match its key")
+		}
 	}
 	if !isRemoteProvider(b.Provider) {
 		return fmt.Errorf("unsupported sandbox binding provider %q", b.Provider)
-	}
-	if b.TenantID != key.TenantID || b.SessionID != key.SessionID {
-		return errors.New("sandbox binding identity does not match its key")
 	}
 	if strings.TrimSpace(b.SandboxID) == "" {
 		return errors.New("sandbox binding requires sandbox ID")
@@ -209,7 +276,15 @@ func invalidateBindingsByConfig(
 	if err != nil {
 		return 0, err
 	}
+	return markBindingKeysStale(ctx, store, keys, configID)
+}
 
+// markBindingKeysStale marks every listed binding of configID stale, one key
+// at a time under that key's lifecycle lock. Shared with the user machines
+// the manager enumerates from the allocation registry.
+func markBindingKeysStale(
+	ctx context.Context, store tenantBindingScanner, keys []SessionSandboxKey, configID string,
+) (int, error) {
 	wanted := NormalizeConfigID(configID)
 	marked := 0
 	var failures []error
@@ -253,7 +328,7 @@ func invalidateBindingsByConfig(
 		acquireTimer.Stop()
 		cancel()
 		if err != nil {
-			failures = append(failures, fmt.Errorf("mark session %s stale: %w", key.SessionID, err))
+			failures = append(failures, fmt.Errorf("mark %s stale: %w", key, err))
 		}
 	}
 	return marked, errors.Join(failures...)
@@ -294,6 +369,8 @@ type MemorySessionSandboxBindingStore struct {
 	bindings map[SessionSandboxKey]SessionSandboxBinding
 	locks    map[SessionSandboxKey]*memoryLifecycleLock
 	turns    map[SessionSandboxKey]*memoryTurnLease
+	rewinds  map[SessionSandboxKey]struct{}
+	activity *background.MemoryActivityRegistry
 }
 
 // NewMemorySessionSandboxBindingStore creates an empty in-memory store.
@@ -302,6 +379,8 @@ func NewMemorySessionSandboxBindingStore() *MemorySessionSandboxBindingStore {
 		bindings: make(map[SessionSandboxKey]SessionSandboxBinding),
 		locks:    make(map[SessionSandboxKey]*memoryLifecycleLock),
 		turns:    make(map[SessionSandboxKey]*memoryTurnLease),
+		rewinds:  make(map[SessionSandboxKey]struct{}),
+		activity: background.NewMemoryActivityRegistry(nil),
 	}
 }
 
@@ -319,11 +398,14 @@ func (s *MemorySessionSandboxBindingStore) Get(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	binding, ok := s.bindings[key]
+	binding, ok := s.bindings[key.Machine()]
 	if !ok {
 		return nil, nil
 	}
 	result := binding
+	if err := result.Validate(key); err != nil {
+		return nil, fmt.Errorf("validate sandbox binding: %w", err)
+	}
 	return &result, nil
 }
 
@@ -342,10 +424,11 @@ func (s *MemorySessionSandboxBindingStore) Create(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.bindings[key]; exists {
+	machine := key.Machine()
+	if _, exists := s.bindings[machine]; exists {
 		return false, nil
 	}
-	s.bindings[key] = binding
+	s.bindings[machine] = binding
 	return true, nil
 }
 
@@ -365,11 +448,12 @@ func (s *MemorySessionSandboxBindingStore) DeleteIfMatch(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	binding, exists := s.bindings[key]
+	machine := key.Machine()
+	binding, exists := s.bindings[machine]
 	if !exists || binding.Provider != provider || binding.SandboxID != sandboxID {
 		return false, nil
 	}
-	delete(s.bindings, key)
+	delete(s.bindings, machine)
 	return true, nil
 }
 
@@ -393,7 +477,8 @@ func (s *MemorySessionSandboxBindingStore) ReplaceTrafficTokenIfMatch(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	binding, exists := s.bindings[key]
+	machine := key.Machine()
+	binding, exists := s.bindings[machine]
 	if !exists ||
 		binding.Provider != expected.Provider ||
 		binding.SandboxID != expected.SandboxID {
@@ -403,7 +488,7 @@ func (s *MemorySessionSandboxBindingStore) ReplaceTrafficTokenIfMatch(
 		return false, nil
 	}
 	binding.TrafficAccessToken = token
-	s.bindings[key] = binding
+	s.bindings[machine] = binding
 	return true, nil
 }
 
@@ -427,7 +512,7 @@ func (s *MemorySessionSandboxBindingStore) listTenantBindingKeys(
 	defer s.mu.Unlock()
 	var keys []SessionSandboxKey
 	for key := range s.bindings {
-		if key.TenantID == tenantID {
+		if key.TenantID == tenantID && !key.IsUserScoped() {
 			keys = append(keys, key)
 		}
 	}
@@ -445,7 +530,8 @@ func (s *MemorySessionSandboxBindingStore) markBindingStale(
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	binding, exists := s.bindings[key]
+	machine := key.Machine()
+	binding, exists := s.bindings[machine]
 	if !exists ||
 		binding.Provider != expected.Provider ||
 		binding.SandboxID != expected.SandboxID {
@@ -453,11 +539,11 @@ func (s *MemorySessionSandboxBindingStore) markBindingStale(
 	}
 	marked := staleAt
 	binding.StaleAt = &marked
-	s.bindings[key] = binding
+	s.bindings[machine] = binding
 	return true, nil
 }
 
-// WithLifecycleLock runs fn while holding the process-local lock for key.
+// WithLifecycleLock runs fn while holding the process-local lock for key.Machine().
 func (s *MemorySessionSandboxBindingStore) WithLifecycleLock(
 	ctx context.Context,
 	key SessionSandboxKey,
@@ -469,12 +555,13 @@ func (s *MemorySessionSandboxBindingStore) WithLifecycleLock(
 	if fn == nil {
 		return errors.New("sandbox lifecycle lock callback is required")
 	}
+	machine := key.Machine()
 
 	s.mu.Lock()
-	lock := s.locks[key]
+	lock := s.locks[machine]
 	if lock == nil {
 		lock = &memoryLifecycleLock{semaphore: make(chan struct{}, 1)}
-		s.locks[key] = lock
+		s.locks[machine] = lock
 	}
 	lock.users++
 	s.mu.Unlock()
@@ -482,13 +569,13 @@ func (s *MemorySessionSandboxBindingStore) WithLifecycleLock(
 	select {
 	case lock.semaphore <- struct{}{}:
 	case <-ctx.Done():
-		s.dropMemoryLifecycleLockUser(key, lock)
+		s.dropMemoryLifecycleLockUser(machine, lock)
 		return ctx.Err()
 	}
 
 	defer func() {
 		<-lock.semaphore
-		s.dropMemoryLifecycleLockUser(key, lock)
+		s.dropMemoryLifecycleLockUser(machine, lock)
 	}()
 	if err := ctx.Err(); err != nil {
 		return err
@@ -539,13 +626,16 @@ func (s *MemorySessionSandboxBindingStore) BeginTurn(
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, held := s.rewinds[key]; held {
+		return ErrSessionRewindLocked
+	}
 	lease := s.turns[key]
 	if lease == nil {
 		lease = &memoryTurnLease{}
 		s.turns[key] = lease
 	}
 	if lease.refs == 0 {
-		lease.rebuildOnce = true
+		lease.rebuildOnce = !s.hasSessionActivityLocked(ctx, key)
 	}
 	lease.refs++
 	return nil
@@ -573,6 +663,56 @@ func (s *MemorySessionSandboxBindingStore) EndTurn(
 	return nil
 }
 
+// TryLockRewind takes a process-local exclusive rewind lock for key.
+func (s *MemorySessionSandboxBindingStore) TryLockRewind(
+	ctx context.Context,
+	key SessionSandboxKey,
+) (func(), error) {
+	if err := key.Validate(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rewinds == nil {
+		s.rewinds = make(map[SessionSandboxKey]struct{})
+	}
+	if lease := s.turns[key]; lease != nil && lease.refs > 0 {
+		return nil, ErrSessionTurnActive
+	}
+	if s.hasSessionActivityLocked(ctx, key) {
+		return nil, ErrSessionWorkActive
+	}
+	if _, held := s.rewinds[key]; held {
+		return nil, ErrSessionRewindLocked
+	}
+	s.rewinds[key] = struct{}{}
+	return func() {
+		s.mu.Lock()
+		delete(s.rewinds, key)
+		s.mu.Unlock()
+	}, nil
+}
+
+// HasRewindLock reports whether rewind currently holds key.
+func (s *MemorySessionSandboxBindingStore) HasRewindLock(
+	ctx context.Context,
+	key SessionSandboxKey,
+) (bool, error) {
+	if err := key.Validate(); err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, held := s.rewinds[key]
+	return held, nil
+}
+
 // TurnState reports whether a chat turn is open and whether its first
 // resolve may still rebuild a stale sandbox.
 func (s *MemorySessionSandboxBindingStore) TurnState(
@@ -587,6 +727,9 @@ func (s *MemorySessionSandboxBindingStore) TurnState(
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.hasSessionActivityLocked(ctx, key) {
+		return true, false, nil
+	}
 	lease := s.turns[key]
 	if lease == nil || lease.refs <= 0 {
 		return false, false, nil

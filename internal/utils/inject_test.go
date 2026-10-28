@@ -424,13 +424,14 @@ func TestInjectAndConditions(t *testing.T) {
 			name:   "existing WHERE with ORDER BY",
 			sql:    "SELECT id, title FROM knowledges WHERE parse_status = 'completed' ORDER BY created_at DESC LIMIT 10",
 			filter: "knowledges.tenant_id = 123",
-			want:   "SELECT id, title FROM knowledges WHERE knowledges.tenant_id = 123 AND (parse_status = 'completed') ORDER BY created_at DESC LIMIT 10",
+			want: "SELECT id, title FROM knowledges WHERE knowledges.tenant_id = 123 " +
+				"AND parse_status = 'completed' ORDER BY created_at DESC LIMIT 10",
 		},
 		{
 			name:   "existing WHERE without tail clauses",
 			sql:    "SELECT id FROM knowledges WHERE enable_status = 'enabled'",
 			filter: "knowledges.deleted_at IS NULL",
-			want:   "SELECT id FROM knowledges WHERE knowledges.deleted_at IS NULL AND (enable_status = 'enabled')",
+			want:   "SELECT id FROM knowledges WHERE knowledges.deleted_at IS NULL AND enable_status = 'enabled'",
 		},
 		{
 			name:   "no WHERE with ORDER BY",
@@ -608,6 +609,55 @@ func TestValidateSQL_DuckDBFileRead(t *testing.T) {
 			t.Fatalf("expected legitimate DuckDB query to pass, got: %#v", validation.Errors)
 		}
 	})
+}
+
+func TestValidateSQLScalarCasts(t *testing.T) {
+	for _, typ := range []string{
+		"SMALLINT", "INTEGER", "BIGINT", "REAL", "DOUBLE PRECISION", "DECIMAL(12,2)",
+		"BOOLEAN", "CHAR(5)", "VARCHAR(20)", "TEXT", "DATE", "TIME", "TIME WITH TIME ZONE",
+		"TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "INTERVAL", "pg_catalog.int4", "pg_catalog.text", "pg_catalog.date",
+	} {
+		for _, query := range []string{
+			"SELECT CAST(amount AS " + typ + ") FROM dataset",
+			"SELECT amount::" + typ + " FROM dataset",
+		} {
+			t.Run(query, func(t *testing.T) {
+				_, validation := ValidateSQL(query, WithSelectOnly(), WithSingleStatement(),
+					WithAllowedTables("dataset"), WithNoDangerousFunctions())
+				if !validation.Valid {
+					t.Fatalf("safe scalar cast rejected: %v", validation.Errors)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateSQLCastsRetainSecurityChecks(t *testing.T) {
+	for _, query := range []string{
+		"SELECT amount::pg_lsn FROM dataset",
+		"SELECT amount::pg_catalog.pg_lsn FROM dataset",
+		"SELECT amount::pg_catalog.regclass FROM dataset",
+		"SELECT amount::pg_catalog.unknown_type FROM dataset",
+		`SELECT amount::"pg_catalog.int4" FROM dataset`,
+		`SELECT amount::pg_catalog."INT4" FROM dataset`,
+		"SELECT CAST(pg_read_file('/etc/passwd') AS INTEGER) FROM dataset",
+		"SELECT CAST(read_text('/etc/passwd') AS VARCHAR) FROM dataset",
+		"SELECT CAST((SELECT amount FROM other_table) AS INTEGER) FROM dataset",
+		"SELECT CAST(amount AS INTEGER) FROM dataset; DELETE FROM dataset",
+		"SELECT CAST(amount AS NUMERIC(pg_read_file('/etc/passwd'))) FROM dataset",
+	} {
+		t.Run(query, func(t *testing.T) {
+			_, validation := ValidateSQL(query, WithSelectOnly(), WithSingleStatement(),
+				WithAllowedTables("dataset"), WithNoDangerousFunctions())
+			if validation.Valid {
+				t.Fatal("unsafe query accepted")
+			}
+			if strings.Contains(query, "NUMERIC(pg_read_file") &&
+				!strings.Contains(fmt.Sprint(validation.Errors), "function 'pg_read_file' is not allowed") {
+				t.Fatalf("type modifier must be checked for dangerous functions: %v", validation.Errors)
+			}
+		})
+	}
 }
 
 func BenchmarkInjectAndConditions(b *testing.B) {

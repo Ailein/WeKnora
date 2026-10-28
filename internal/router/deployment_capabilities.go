@@ -3,6 +3,7 @@ package router
 import (
 	"github.com/Tencent/WeKnora/internal/handler"
 	"github.com/Tencent/WeKnora/internal/sandbox"
+	"github.com/Tencent/WeKnora/internal/sandbox/allocation"
 )
 
 func deploymentCapabilitiesFromRouter(params RouterParams) handler.DeploymentCapabilitiesData {
@@ -12,16 +13,21 @@ func deploymentCapabilitiesFromRouter(params RouterParams) handler.DeploymentCap
 		IM:            params.IMHandler != nil,
 		// Match RegisterEmbedChannelRoutes: management routes depend on handler only.
 		Embed: params.EmbedChannelHandler != nil,
-		API:   params.TenantHandler != nil && params.TenantAPIKeyService != nil,
+		// Match RegisterMCPEndpointRoutes / RegisterMCPServerRoutes.
+		MCPServer: params.MCPEndpointHandler != nil && params.MCPServer != nil && params.MCPEndpointService != nil,
+		API:       params.TenantHandler != nil && params.TenantAPIKeyService != nil,
 		MCP: params.MCPServiceHandler != nil &&
 			params.MCPCredentialsHandler != nil &&
 			params.MCPOAuthHandler != nil,
 		WebSearch: params.WebSearchHandler != nil &&
 			params.WebSearchProviderHandler != nil &&
 			params.WebSearchCredentialsHandler != nil,
-		VectorStore:   params.VectorStoreHandler != nil,
-		Storage:       params.StorageBackendHandler != nil,
-		Sandbox:       params.SandboxConfigHandler != nil,
-		SandboxDocker: sandbox.DockerBackendEnabled(),
+		VectorStore:           params.VectorStoreHandler != nil,
+		Storage:               params.StorageBackendHandler != nil,
+		Sandbox:               params.SandboxConfigHandler != nil,
+		SandboxDocker:         sandbox.DockerBackendEnabled(),
+		SandboxHost:           params.HostSandbox.Manager != nil,
+		SandboxRemote:         params.SandboxConfigHandler != nil && !params.HostSandbox.Desktop,
+		SandboxUserAllocation: allocation.UserModeAvailable(),
 	})
 }

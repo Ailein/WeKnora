@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -329,13 +331,56 @@ func TestCodexAggregateFromFinalResponse(t *testing.T) {
 }
 
 func TestCodexAPIErrorUsageLimit(t *testing.T) {
-	err := codexAPIError(429, []byte(`{"error":{"code":"usage_limit_reached","message":"limit","plan_type":"PLUS","resets_at":1}}`))
+	header := http.Header{"Retry-After": []string{"7"}}
+	err := codexAPIError(429, header, []byte(`{"error":{"code":"usage_limit_reached","message":"limit","plan_type":"PLUS","resets_at":1}}`))
 	if !strings.Contains(err.Error(), "用量上限") || !strings.Contains(err.Error(), "plus") {
 		t.Errorf("usage limit error = %v", err)
 	}
-	err = codexAPIError(500, []byte(`{"error":{"message":"internal"}}`))
+	// The typed error stays in the chain so the agent's retry policy sees
+	// the status and the vendor's Retry-After.
+	var httpErr *api.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != 429 || httpErr.RetryAfter() != 7*time.Second {
+		t.Errorf("usage limit error does not wrap the HTTP status: %#v", err)
+	}
+	err = codexAPIError(500, nil, []byte(`{"error":{"message":"internal"}}`))
 	if !strings.Contains(err.Error(), "status 500") || !strings.Contains(err.Error(), "internal") {
 		t.Errorf("generic error = %v", err)
+	}
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != 500 {
+		t.Errorf("generic error is not an *api.HTTPError: %#v", err)
+	}
+}
+
+func TestCodexReasoningLevels(t *testing.T) {
+	c := newTestCodexChat(t)
+	cases := map[ReasoningEffort]codexReasoning{
+		"off":     {Effort: "low"},
+		"auto":    {Effort: "medium", Summary: "auto"},
+		"minimal": {Effort: "low", Summary: "auto"},
+		"low":     {Effort: "low", Summary: "auto"},
+		"high":    {Effort: "high", Summary: "auto"},
+		"xhigh":   {Effort: "xhigh", Summary: "auto"},
+		"max":     {Effort: "xhigh", Summary: "auto"},
+	}
+	for level, want := range cases {
+		if got := c.reasoningFor(&ChatOptions{ReasoningEffort: level}); *got != want {
+			t.Errorf("reasoning_effort=%s → %+v, want %+v", level, *got, want)
+		}
+	}
+}
+
+func TestCodexRuntimeNoticeTrailsConversation(t *testing.T) {
+	c := newTestCodexChat(t)
+	req := c.buildRequest(context.Background(), []Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "hi"},
+	}, &ChatOptions{RuntimeNotice: "context was compacted"})
+	last := req.Input[len(req.Input)-1]
+	if last.Role != "developer" || len(last.Content) != 1 || last.Content[0].Text != "context was compacted" {
+		t.Errorf("runtime notice item = %+v", last)
+	}
+	if req.Instructions != "sys" {
+		t.Errorf("instructions = %q, want the system prompt only", req.Instructions)
 	}
 }
 

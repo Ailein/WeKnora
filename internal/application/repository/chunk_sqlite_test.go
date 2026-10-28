@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -18,7 +20,7 @@ func setupChunkTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&types.Chunk{}, &types.KnowledgeTag{}))
+	require.NoError(t, db.AutoMigrate(&types.Chunk{}, &types.ChunkRevision{}, &types.KnowledgeTag{}))
 	return db
 }
 
@@ -177,6 +179,89 @@ func TestKnowledgeTag_SQLite_SeqIDAutoAssigned(t *testing.T) {
 	assert.NotEqual(t, tag1.SeqID, tag2.SeqID)
 }
 
+func TestPurgeSupersededChunksByKnowledgeIDRemovesOnlyReplacedHistory(t *testing.T) {
+	db := setupChunkTestDB(t)
+	repo := NewChunkRepository(db).(*chunkRepository)
+	ctx := context.Background()
+	const tenantID uint64 = 1
+	const knowledgeID = "knowledge-1"
+
+	deletedAt := time.Now().UTC().Add(-time.Minute)
+	old := &types.Chunk{
+		ID: "old", TenantID: tenantID, KnowledgeID: knowledgeID, KnowledgeBaseID: "kb-1",
+		ChunkIndex: 0, ChunkType: types.ChunkTypeText, Content: "old", IsEnabled: true,
+		CreatedAt: deletedAt.Add(-time.Minute), DeletedAt: gorm.DeletedAt{Time: deletedAt, Valid: true},
+	}
+	replacement := &types.Chunk{
+		ID: "replacement", TenantID: tenantID, KnowledgeID: knowledgeID, KnowledgeBaseID: "kb-1",
+		ChunkIndex: 0, ChunkType: types.ChunkTypeText, Content: "new", IsEnabled: true,
+		CreatedAt: deletedAt.Add(time.Minute),
+	}
+	// This is deliberately deleted but has no active replacement. It models a
+	// cancelled/failed parse or a user deletion and must stay recoverable.
+	keep := &types.Chunk{
+		ID: "keep", TenantID: tenantID, KnowledgeID: knowledgeID, KnowledgeBaseID: "kb-1",
+		ChunkIndex: 1, ChunkType: types.ChunkTypeText, Content: "keep", IsEnabled: true,
+		CreatedAt: deletedAt.Add(-time.Minute), DeletedAt: gorm.DeletedAt{Time: deletedAt, Valid: true},
+	}
+	require.NoError(t, db.Unscoped().Create([]*types.Chunk{old, replacement, keep}).Error)
+	require.NoError(t, db.Create(&types.ChunkRevision{
+		ID: "old-revision", TenantID: tenantID, KnowledgeID: knowledgeID, KnowledgeBaseID: "kb-1",
+		ChunkID: old.ID, Revision: 1, Content: "old", EditedAt: deletedAt,
+	}).Error)
+	require.NoError(t, db.Create(&types.ChunkRevision{
+		ID: "keep-revision", TenantID: tenantID, KnowledgeID: knowledgeID, KnowledgeBaseID: "kb-1",
+		ChunkID: keep.ID, Revision: 1, Content: "keep", EditedAt: deletedAt,
+	}).Error)
+
+	purged, err := repo.PurgeSupersededChunksByKnowledgeID(ctx, tenantID, knowledgeID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), purged)
+
+	var oldCount, keepCount, replacementCount, oldRevisions, keepRevisions int64
+	require.NoError(t, db.Unscoped().Model(&types.Chunk{}).Where("id = ?", old.ID).Count(&oldCount).Error)
+	require.NoError(t, db.Unscoped().Model(&types.Chunk{}).Where("id = ?", keep.ID).Count(&keepCount).Error)
+	require.NoError(t, db.Model(&types.Chunk{}).Where("id = ?", replacement.ID).Count(&replacementCount).Error)
+	require.NoError(t, db.Model(&types.ChunkRevision{}).Where("chunk_id = ?", old.ID).Count(&oldRevisions).Error)
+	require.NoError(t, db.Model(&types.ChunkRevision{}).Where("chunk_id = ?", keep.ID).Count(&keepRevisions).Error)
+	assert.Zero(t, oldCount, "the superseded chunk must be physically reclaimed")
+	assert.Equal(t, int64(1), keepCount, "unreplaced history must remain recoverable")
+	assert.Equal(t, int64(1), replacementCount)
+	assert.Zero(t, oldRevisions, "revisions of a purged chunk must not become orphaned")
+	assert.Equal(t, int64(1), keepRevisions)
+}
+
+func TestPurgeSupersededChunksByKnowledgeIDDoesNotPurgeEarlierActiveChunk(t *testing.T) {
+	db := setupChunkTestDB(t)
+	repo := NewChunkRepository(db).(*chunkRepository)
+	ctx := context.Background()
+	const tenantID uint64 = 1
+	const knowledgeID = "knowledge-1"
+
+	// The live row predates the deletion, so it cannot be a replacement for it.
+	liveCreated := time.Now().UTC().Add(-2 * time.Minute)
+	deletedAt := time.Now().UTC().Add(-time.Minute)
+	old := &types.Chunk{
+		ID: "old", TenantID: tenantID, KnowledgeID: knowledgeID, KnowledgeBaseID: "kb-1",
+		ChunkIndex: 0, ChunkType: types.ChunkTypeText, Content: "old", IsEnabled: true,
+		CreatedAt: deletedAt.Add(-time.Minute), DeletedAt: gorm.DeletedAt{Time: deletedAt, Valid: true},
+	}
+	unrelatedLive := &types.Chunk{
+		ID: "live", TenantID: tenantID, KnowledgeID: knowledgeID, KnowledgeBaseID: "kb-1",
+		ChunkIndex: 0, ChunkType: types.ChunkTypeText, Content: "live", IsEnabled: true,
+		CreatedAt: liveCreated,
+	}
+	require.NoError(t, db.Unscoped().Create([]*types.Chunk{old, unrelatedLive}).Error)
+
+	purged, err := repo.PurgeSupersededChunksByKnowledgeID(ctx, tenantID, knowledgeID)
+	require.NoError(t, err)
+	assert.Zero(t, purged)
+
+	var count int64
+	require.NoError(t, db.Unscoped().Model(&types.Chunk{}).Where("id = ?", old.ID).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
 func TestCreateChunks_SQLite_SeqIDAfterSoftDelete(t *testing.T) {
 	db := setupChunkTestDB(t)
 	repo := NewChunkRepository(db)
@@ -257,6 +342,16 @@ func TestListPagedChunksByKnowledgeID_FiltersEnabledState(t *testing.T) {
 	require.Equal(t, int64(1), total)
 	require.Len(t, chunks, 1)
 	assert.Equal(t, enabledChunk.ID, chunks[0].ID)
+
+	disabled := false
+	chunks, total, err = repo.ListPagedChunksByKnowledgeID(
+		ctx, 1, "faq-knowledge", &types.Pagination{Page: 1, PageSize: 20},
+		[]types.ChunkType{types.ChunkTypeFAQ}, nil, "", "", "", types.KnowledgeTypeFAQ, &disabled,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Len(t, chunks, 1)
+	assert.Equal(t, disabledChunk.ID, chunks[0].ID)
 
 	allChunks, allTotal, err := repo.ListPagedChunksByKnowledgeID(
 		ctx, 1, "faq-knowledge", &types.Pagination{Page: 1, PageSize: 20},
@@ -350,4 +445,147 @@ func TestListRecentDocumentChunksWithQuestions_UnionsExplicitKBAndKnowledge(t *t
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.ElementsMatch(t, []string{fromExplicitKB.ID, fromExplicitDocument.ID}, []string{got[0].ID, got[1].ID})
+}
+
+func TestCreateChunks_LeavesSourceContentEmpty(t *testing.T) {
+	db := setupChunkTestDB(t)
+	repo := NewChunkRepository(db)
+
+	chunk := makeChunk("kb-src", "k-src", types.ChunkTypeText)
+	require.NoError(t, repo.CreateChunks(context.Background(), []*types.Chunk{chunk}))
+
+	var saved types.Chunk
+	require.NoError(t, db.First(&saved, "id = ?", chunk.ID).Error)
+	assert.Equal(t, "test content", saved.Content)
+	assert.Empty(t, saved.SourceContent, "source_content is backfilled lazily on first edit, not on create")
+	assert.Equal(t, "ready", saved.IndexStatus)
+}
+
+func TestUpdateChunks_UpdatesOnlyDocumentedColumns(t *testing.T) {
+	db := setupChunkTestDB(t)
+	repo := NewChunkRepository(db)
+	ctx := context.Background()
+
+	chunks := make([]*types.Chunk, 0, 3)
+	for i := 0; i < 3; i++ {
+		c := makeChunk("kb-upd", "k-upd", types.ChunkTypeFAQ)
+		c.Metadata = types.JSON(`{"keep":"me"}`)
+		c.ContentHash = "hash-original"
+		chunks = append(chunks, c)
+	}
+	require.NoError(t, repo.CreateChunks(ctx, chunks))
+
+	var before types.Chunk
+	require.NoError(t, db.First(&before, "id = ?", chunks[0].ID).Error)
+
+	chunks[0].Content = "edited-0"
+	chunks[0].IsEnabled = false
+	chunks[0].Flags = 0
+	chunks[0].Status = int(types.ChunkStatusIndexed)
+	chunks[0].TagID = "tag-a"
+	chunks[0].ContentHash = "hash-should-not-persist"
+	chunks[1].Content = "edited-1"
+	chunks[1].Status = int(types.ChunkStatusStored)
+	// chunks[2] is deliberately not passed to UpdateChunks.
+	require.NoError(t, repo.UpdateChunks(ctx, chunks[:2]))
+
+	var saved []types.Chunk
+	require.NoError(t, db.Order("chunk_index").Find(&saved, "knowledge_id = ?", "k-upd").Error)
+	byID := make(map[string]types.Chunk, len(saved))
+	for _, s := range saved {
+		byID[s.ID] = s
+	}
+
+	c0 := byID[chunks[0].ID]
+	assert.Equal(t, "edited-0", c0.Content)
+	assert.False(t, c0.IsEnabled, "zero-value bool must be written")
+	assert.Equal(t, types.ChunkFlags(0), c0.Flags, "zero-value flags must be written")
+	assert.Equal(t, int(types.ChunkStatusIndexed), c0.Status)
+	assert.Equal(t, "tag-a", c0.TagID)
+	assert.Equal(t, "hash-original", c0.ContentHash, "content_hash is outside the UpdateChunks contract")
+	assert.JSONEq(t, `{"keep":"me"}`, string(c0.Metadata), "metadata is outside the UpdateChunks contract")
+	assert.Equal(t, before.SeqID, c0.SeqID)
+	assert.False(t, c0.UpdatedAt.Before(before.UpdatedAt))
+
+	c1 := byID[chunks[1].ID]
+	assert.Equal(t, "edited-1", c1.Content)
+	assert.True(t, c1.IsEnabled)
+	assert.Equal(t, int(types.ChunkStatusStored), c1.Status)
+
+	c2 := byID[chunks[2].ID]
+	assert.Equal(t, "test content", c2.Content, "rows not in the batch stay untouched")
+}
+
+func TestUpdateChunks_CleansInvalidUTF8(t *testing.T) {
+	db := setupChunkTestDB(t)
+	repo := NewChunkRepository(db)
+	ctx := context.Background()
+
+	chunk := makeChunk("kb-utf8", "k-utf8", types.ChunkTypeText)
+	require.NoError(t, repo.CreateChunks(ctx, []*types.Chunk{chunk}))
+
+	chunk.Content = "ok\xffbad"
+	require.NoError(t, repo.UpdateChunks(ctx, []*types.Chunk{chunk}))
+
+	var saved types.Chunk
+	require.NoError(t, db.First(&saved, "id = ?", chunk.ID).Error)
+	assert.True(t, utf8.ValidString(saved.Content))
+}
+
+func TestUpdateChunkFieldsByIDs_ScopesByTenantAndSetsUpdatedAt(t *testing.T) {
+	db := setupChunkTestDB(t)
+	repo := NewChunkRepository(db)
+	ctx := context.Background()
+
+	mine := makeChunk("kb-fields", "k-fields", types.ChunkTypeFAQ)
+	other := makeChunk("kb-fields", "k-fields", types.ChunkTypeFAQ)
+	other.TenantID = 2
+	require.NoError(t, repo.CreateChunks(ctx, []*types.Chunk{mine, other}))
+
+	var before types.Chunk
+	require.NoError(t, db.First(&before, "id = ?", mine.ID).Error)
+
+	require.NoError(t, repo.UpdateChunkFieldsByIDs(ctx, 1, []string{mine.ID, other.ID}, map[string]interface{}{
+		"status": int(types.ChunkStatusIndexed),
+	}))
+
+	var savedMine, savedOther types.Chunk
+	require.NoError(t, db.First(&savedMine, "id = ?", mine.ID).Error)
+	require.NoError(t, db.First(&savedOther, "id = ?", other.ID).Error)
+	assert.Equal(t, int(types.ChunkStatusIndexed), savedMine.Status)
+	assert.Equal(t, "test content", savedMine.Content, "other columns are untouched")
+	assert.False(t, savedMine.UpdatedAt.Before(before.UpdatedAt))
+	assert.Equal(t, int(types.ChunkStatusDefault), savedOther.Status, "rows of another tenant must not change")
+
+	// Empty inputs are no-ops.
+	require.NoError(t, repo.UpdateChunkFieldsByIDs(ctx, 1, nil, map[string]interface{}{"status": 0}))
+	require.NoError(t, repo.UpdateChunkFieldsByIDs(ctx, 1, []string{mine.ID}, nil))
+}
+
+// Exercise the actual batch insert used by FAQ imports, including a second SQL batch.
+func TestCreateChunks_PreservesExplicitEnabledState(t *testing.T) {
+	for _, count := range []int{2, createChunksBatchSize + 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			db := setupChunkTestDB(t)
+			repo := NewChunkRepository(db)
+			chunks := make([]*types.Chunk, count)
+			for i := range chunks {
+				chunks[i] = makeChunk("kb-enabled", "faq-enabled", types.ChunkTypeFAQ)
+				chunks[i].IsEnabled = i%2 == 0
+				chunks[i].ChunkIndex = i
+			}
+			require.NoError(t, repo.CreateChunks(context.Background(), chunks))
+			var saved []types.Chunk
+			require.NoError(t, db.Order("chunk_index").Find(&saved).Error)
+			require.Len(t, saved, count)
+			for i, chunk := range saved {
+				assert.Equal(t, i%2 == 0, chunk.IsEnabled, "stored chunk %d", i)
+				assert.Equal(t, i%2 == 0, chunks[i].IsEnabled, "caller chunk %d", i)
+				assert.Equal(t, chunks[i].SeqID, chunk.SeqID)
+				assert.Positive(t, chunk.SeqID)
+				assert.False(t, chunks[i].CreatedAt.IsZero())
+				assert.True(t, chunks[i].CreatedAt.Equal(chunk.CreatedAt))
+			}
+		})
+	}
 }

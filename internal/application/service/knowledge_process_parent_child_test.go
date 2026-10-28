@@ -29,12 +29,18 @@ func (r *parentChildKnowledgeRepo) UpdateKnowledge(
 }
 
 type parentChildChunkService struct {
-	interfaces.ChunkService
+	interfaces.ChunkRepository
 	created []*types.Chunk
+	purges  int
 }
 
-func (s *parentChildChunkService) DeleteChunksByKnowledgeID(context.Context, string) error {
+func (s *parentChildChunkService) DeleteChunksByKnowledgeID(context.Context, uint64, string) error {
 	return nil
+}
+
+func (s *parentChildChunkService) PurgeSupersededChunksByKnowledgeID(context.Context, uint64, string) (int64, error) {
+	s.purges++
+	return 0, nil
 }
 
 func (s *parentChildChunkService) CreateChunks(_ context.Context, chunks []*types.Chunk) error {
@@ -160,7 +166,7 @@ func TestProcessChunksIndexesEveryTextChild(t *testing.T) {
 	ctx := context.WithValue(context.Background(), types.TenantInfoContextKey, tenant)
 	svc := &knowledgeService{
 		repo:           &parentChildKnowledgeRepo{knowledge: knowledge},
-		chunkService:   chunkService,
+		chunkRepo:      chunkService,
 		modelService:   parentChildModelService{embedder: parentChildEmbedder{}},
 		retrieveEngine: parentChildRetrieveRegistry{engine: retrieveEngine},
 		graphEngine:    parentChildGraphRepo{},
@@ -191,6 +197,8 @@ func TestProcessChunksIndexesEveryTextChild(t *testing.T) {
 		}
 	}
 	require.Len(t, textChunkIDs, 2)
+	require.Equal(t, 1, chunkService.purges,
+		"successful processing must reclaim superseded history only after indexing")
 
 	indexedSourceIDs := make([]string, 0, len(retrieveEngine.indexed))
 	for _, info := range retrieveEngine.indexed {

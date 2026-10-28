@@ -236,6 +236,21 @@ func TestMergeSandboxConfigForUpdateNilIncoming(t *testing.T) {
 	require.Nil(t, MergeSandboxConfigForUpdate(nil, &TenantSandboxConfig{}))
 }
 
+func TestMergeSandboxConfigForUpdatePreservesDesktopEnabled(t *testing.T) {
+	incoming := &TenantSandboxConfig{SandboxType: "cube", DesktopEnabled: true}
+	existing := &TenantSandboxConfig{SandboxType: "cube"}
+	merged := MergeSandboxConfigForUpdate(incoming, existing)
+	require.True(t, merged.DesktopEnabled)
+}
+
+func TestMergeSandboxConfigForUpdateClearsDesktopEnabled(t *testing.T) {
+	incoming := &TenantSandboxConfig{SandboxType: "cube", DesktopEnabled: false}
+	existing := &TenantSandboxConfig{SandboxType: "cube", DesktopEnabled: true}
+	merged := MergeSandboxConfigForUpdate(incoming, existing)
+	require.False(t, merged.DesktopEnabled,
+		"selecting the CLI template must persist desktop_enabled=false, not keep a stale true")
+}
+
 func TestMergeSandboxConfigForUpdatePreservesSkillImage(t *testing.T) {
 	existing := &TenantSandboxConfig{
 		E2B:        &E2BSandboxConfig{APIKey: "old-e2b"},
@@ -342,4 +357,17 @@ func TestMergeSandboxConfigForUpdateDoesNotMutateInputs(t *testing.T) {
 		"merge must not mutate the incoming payload")
 	require.Equal(t, "old-e2b", existing.E2B.APIKey,
 		"merge must not mutate the stored config")
+}
+
+func TestMergeSandboxConfigForUpdateKeepsAllocationPolicyWhenOmitted(t *testing.T) {
+	existing := &TenantSandboxConfig{AllocationMode: SandboxAllocationUser, UserSandboxEmptyRetentionDays: 30}
+	out := MergeSandboxConfigForUpdate(&TenantSandboxConfig{}, existing)
+	require.Equal(t, SandboxAllocationUser, out.AllocationMode)
+	require.Equal(t, 30, out.UserSandboxEmptyRetentionDays)
+}
+
+func TestMergeSandboxConfigForUpdateHonoursExplicitSessionMode(t *testing.T) {
+	existing := &TenantSandboxConfig{AllocationMode: SandboxAllocationUser}
+	out := MergeSandboxConfigForUpdate(&TenantSandboxConfig{AllocationMode: SandboxAllocationSession}, existing)
+	require.Equal(t, SandboxAllocationSession, out.AllocationMode)
 }

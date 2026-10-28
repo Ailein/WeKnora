@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/codexauth"
 	"github.com/Tencent/WeKnora/internal/types"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
@@ -18,9 +19,10 @@ import (
 
 // CodexChat implements Chat over the ChatGPT-subscription Codex channel
 // (chatgpt.com/backend-api/codex/responses). The wire protocol is the OpenAI
-// Responses API — not Chat Completions — with rotating OAuth credentials, so
-// it gets its own implementation alongside AnthropicChat rather than a
-// providerAdapter on RemoteAPIChat.
+// Responses API — not Chat Completions — with rotating OAuth credentials and a
+// dialect the generic openairesponses client does not speak (stream-only,
+// store:false, no output cap, mandatory instructions, 401 force-refresh), so it
+// keeps its own client; NewRemoteChat routes the codex vendor here.
 //
 // The backend only serves streaming responses, so the non-streaming Chat()
 // aggregates the SSE stream into a single ChatResponse.
@@ -154,8 +156,8 @@ func (c *CodexChat) buildRequest(ctx context.Context, messages []Message, opts *
 	// CacheRetentionNone (compaction summaries) must not occupy the
 	// session's cache slot: no prompt_cache_key, instance-scoped session.
 	cacheKey := ""
-	if resolveCacheRetention(opts) != CacheRetentionNone {
-		cacheKey = promptCacheSessionID(ctx, opts)
+	if api.ResolveCacheRetention(opts) != CacheRetentionNone {
+		cacheKey = codexPromptCacheKey(ctx, opts)
 		if cacheKey == "" {
 			cacheKey = c.sessionID
 		}
@@ -176,6 +178,7 @@ func (c *CodexChat) buildRequest(ctx context.Context, messages []Message, opts *
 	var systemParts []string
 	msgIndex := 0
 	for _, msg := range messages {
+		msg = api.NeutralizeMessageSpecialTokens(msg)
 		switch msg.Role {
 		case "system":
 			if text := messageText(msg); text != "" {
@@ -227,6 +230,16 @@ func (c *CodexChat) buildRequest(ctx context.Context, messages []Message, opts *
 	if req.Instructions == "" {
 		req.Instructions = codexDefaultInstructions
 	}
+	// Trusted recovery context goes after the conversation so the cached
+	// prefix (instructions + history) is untouched — same as the upstream
+	// Responses client.
+	if opts != nil && opts.RuntimeNotice != "" {
+		req.Input = append(req.Input, codexInputItem{
+			Type:    "message",
+			Role:    "developer",
+			Content: []codexContentPart{{Type: "input_text", Text: opts.RuntimeNotice}},
+		})
+	}
 
 	if opts != nil {
 		for _, tool := range opts.Tools {
@@ -272,8 +285,12 @@ func (c *CodexChat) buildRequest(ctx context.Context, messages []Message, opts *
 	return req
 }
 
-// reasoningFor maps WeKnora's Thinking switch onto Responses reasoning
-// effort. extra_config.reasoning_effort overrides the "thinking on" effort.
+// reasoningFor maps the requested thinking level onto Responses reasoning
+// effort. The backend takes low…xhigh: "off" is sent as low (effort cannot be
+// switched off there), minimal folds onto low and max onto xhigh — the same
+// map runtime/fork_providers.go publishes as the catalog's thinking levels.
+// No preference, or "auto", uses extra_config.reasoning_effort (default
+// medium).
 func (c *CodexChat) reasoningFor(opts *ChatOptions) *codexReasoning {
 	base := "medium"
 	if c.extraConfig != nil {
@@ -284,17 +301,45 @@ func (c *CodexChat) reasoningFor(opts *ChatOptions) *codexReasoning {
 	if base == "minimal" { // gpt-5.2+ rejects minimal; clamp like pi-ai does
 		base = "low"
 	}
-	if opts != nil && opts.Thinking != nil && !*opts.Thinking {
-		return &codexReasoning{Effort: "low"}
+	level, requested := opts.Reasoning()
+	if !requested || level == api.ReasoningAuto {
+		return &codexReasoning{Effort: base, Summary: "auto"}
 	}
-	return &codexReasoning{Effort: base, Summary: "auto"}
+	switch level {
+	case api.ReasoningOff:
+		return &codexReasoning{Effort: "low"}
+	case api.ReasoningMinimal:
+		return &codexReasoning{Effort: "low", Summary: "auto"}
+	case api.ReasoningMax:
+		return &codexReasoning{Effort: "xhigh", Summary: "auto"}
+	default:
+		return &codexReasoning{Effort: string(level), Summary: "auto"}
+	}
+}
+
+// codexPromptCacheKey is the caller's cache routing key, falling back to the
+// business session on the context.
+func codexPromptCacheKey(ctx context.Context, opts *ChatOptions) string {
+	if opts != nil && opts.PromptCacheKey != "" {
+		return api.ClampPromptCacheKey(opts.PromptCacheKey)
+	}
+	if sessionID, ok := types.SessionIDFromContext(ctx); ok {
+		return api.ClampPromptCacheKey(sessionID)
+	}
+	return ""
 }
 
 func messageText(msg Message) string {
 	if strings.TrimSpace(msg.Content) != "" {
 		return msg.Content
 	}
-	return textFromMultiContent(msg.MultiContent)
+	textParts := make([]string, 0, len(msg.MultiContent))
+	for _, part := range msg.MultiContent {
+		if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
+			textParts = append(textParts, strings.TrimSpace(part.Text))
+		}
+	}
+	return strings.Join(textParts, "\n")
 }
 
 func userContentParts(msg Message) []codexContentPart {
@@ -313,7 +358,7 @@ func userContentParts(msg Message) []codexContentPart {
 						detail = "auto"
 					}
 					parts = append(parts, codexContentPart{
-						Type: "input_image", ImageURL: resolveImageURLForLLM(p.ImageURL.URL), Detail: detail,
+						Type: "input_image", ImageURL: api.ResolveImageURLForLLM(p.ImageURL.URL), Detail: detail,
 					})
 				}
 			}
@@ -322,7 +367,7 @@ func userContentParts(msg Message) []codexContentPart {
 	}
 	for _, img := range msg.Images {
 		parts = append(parts, codexContentPart{
-			Type: "input_image", ImageURL: resolveImageURLForLLM(img), Detail: "auto",
+			Type: "input_image", ImageURL: api.ResolveImageURLForLLM(img), Detail: "auto",
 		})
 	}
 	if msg.Content != "" {
@@ -360,13 +405,17 @@ func (c *CodexChat) doRequest(ctx context.Context, jsonBody []byte, sessionID st
 		httpReq.Header.Set("Accept", "text/event-stream")
 		codexauth.ApplyHeaders(httpReq.Header, token, accountID, sessionID)
 		secutils.ApplyCustomHeaders(httpReq, c.customHeaders)
-		resp, err := rawHTTPClient.Do(httpReq)
-		return resp, token, err
+		resp, err := api.HTTPClient.Do(httpReq)
+		if err != nil {
+			// Typed so the agent's retry policy treats it as transient.
+			return nil, token, &api.TransportError{Op: "send request", Err: err}
+		}
+		return resp, token, nil
 	}
 
 	resp, usedToken, err := send()
 	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
@@ -377,20 +426,22 @@ func (c *CodexChat) doRequest(ctx context.Context, jsonBody []byte, sessionID st
 		}
 		resp, _, err = send()
 		if err != nil {
-			return nil, fmt.Errorf("send request: %w", err)
+			return nil, err
 		}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-		return nil, codexAPIError(resp.StatusCode, body)
+		return nil, codexAPIError(resp.StatusCode, resp.Header, body)
 	}
 	return resp, nil
 }
 
 // codexAPIError turns backend errors into actionable messages — most
-// importantly the subscription usage-limit shape.
-func codexAPIError(status int, body []byte) error {
+// importantly the subscription usage-limit shape. The *api.HTTPError stays in
+// the chain so the agent's retry policy classifies the status and honours
+// Retry-After like it does for every other vendor.
+func codexAPIError(status int, header http.Header, body []byte) error {
 	var parsed struct {
 		Error struct {
 			Code     string  `json:"code"`
@@ -405,6 +456,11 @@ func codexAPIError(status int, body []byte) error {
 	if code == "" {
 		code = parsed.Error.Type
 	}
+	detail := parsed.Error.Message
+	if detail == "" {
+		detail = string(truncateBytes(body, 500))
+	}
+	httpErr := &api.HTTPError{StatusCode: status, Body: detail, Header: header}
 	lower := strings.ToLower(code)
 	if status == http.StatusTooManyRequests ||
 		strings.Contains(lower, "usage_limit_reached") ||
@@ -414,13 +470,10 @@ func codexAPIError(status int, body []byte) error {
 		if parsed.Error.PlanType != "" {
 			plan = fmt.Sprintf("（%s 套餐）", strings.ToLower(parsed.Error.PlanType))
 		}
-		return fmt.Errorf("已达 ChatGPT 订阅用量上限%s，请稍后再试或升级套餐 (HTTP %d: %s)",
-			plan, status, firstNonEmpty(parsed.Error.Message, string(truncateBytes(body, 200))))
+		httpErr.Body = firstNonEmpty(parsed.Error.Message, string(truncateBytes(body, 200)))
+		return fmt.Errorf("已达 ChatGPT 订阅用量上限%s，请稍后再试或升级套餐: %w", plan, httpErr)
 	}
-	if parsed.Error.Message != "" {
-		return fmt.Errorf("API request failed with status %d: %s", status, parsed.Error.Message)
-	}
-	return fmt.Errorf("API request failed with status %d: %s", status, truncateBytes(body, 500))
+	return httpErr
 }
 
 func firstNonEmpty(a, b string) string {
@@ -489,7 +542,7 @@ type codexStreamEvent struct {
 
 // codexStreamState accumulates one response across SSE events.
 type codexStreamState struct {
-	thinkingEmitter
+	codexThinking
 	content      strings.Builder
 	reasoning    strings.Builder
 	toolOrder    []string
@@ -500,6 +553,23 @@ type codexStreamState struct {
 	finishReason string
 	completed    bool
 	err          error
+}
+
+// codexThinking wraps api.ThinkingEmitter and remembers whether a
+// thinking-done marker is still owed, which the summary-part separator needs.
+type codexThinking struct {
+	emitter api.ThinkingEmitter
+	active  bool
+}
+
+func (t *codexThinking) emit(ch chan types.StreamResponse, content string) {
+	t.active = true
+	t.emitter.Emit(ch, content)
+}
+
+func (t *codexThinking) finish(ch chan types.StreamResponse) {
+	t.active = false
+	t.emitter.Finish(ch)
 }
 
 func newCodexStreamState() *codexStreamState {
@@ -740,7 +810,7 @@ func (s *codexStreamState) absorbFinalResponse(resp *codexResponsePayload) {
 
 // Chat 非流式：请求仍以流式发出（后端只支持流式），本地聚合成完整响应。
 func (c *CodexChat) Chat(ctx context.Context, messages []Message, opts *ChatOptions) (*types.ChatResponse, error) {
-	ctx, cancel := withLLMTimeout(ctx, defaultChatTimeout)
+	ctx, cancel := api.WithLLMTimeout(ctx, api.DefaultChatTimeout)
 	defer cancel()
 
 	req := c.buildRequest(ctx, messages, opts)
@@ -758,7 +828,7 @@ func (c *CodexChat) Chat(ctx context.Context, messages []Message, opts *ChatOpti
 	defer resp.Body.Close()
 
 	state := newCodexStreamState()
-	reader := NewSSEReader(resp.Body)
+	reader := api.NewSSEReader(resp.Body)
 	for {
 		event, err := reader.ReadEvent()
 		if err == io.EOF {
@@ -801,13 +871,13 @@ func (c *CodexChat) Chat(ctx context.Context, messages []Message, opts *ChatOpti
 		FinishReason:     state.finishReason,
 		Usage:            usage,
 	}
-	logUsage(ctx, c.modelName, &result.Usage)
+	api.LogUsage(ctx, c.modelName, &result.Usage)
 	return result, nil
 }
 
 // ChatStream 流式聊天。
 func (c *CodexChat) ChatStream(ctx context.Context, messages []Message, opts *ChatOptions) (<-chan types.StreamResponse, error) {
-	timeoutCtx, cancel := withLLMTimeout(ctx, defaultStreamTimeout)
+	timeoutCtx, cancel := api.WithLLMTimeout(ctx, api.DefaultStreamTimeout)
 
 	req := c.buildRequest(ctx, messages, opts)
 	jsonBody, err := json.Marshal(req)
@@ -836,11 +906,11 @@ func (c *CodexChat) ChatStream(ctx context.Context, messages []Message, opts *Ch
 
 func (c *CodexChat) processCodexStream(ctx context.Context, body io.Reader, streamChan chan types.StreamResponse) {
 	state := newCodexStreamState()
-	reader := NewSSEReader(body)
+	reader := api.NewSSEReader(body)
 
 	finish := func() {
 		state.finish(streamChan)
-		logUsage(ctx, c.modelName, state.usage)
+		api.LogUsage(ctx, c.modelName, state.usage)
 		streamChan <- types.StreamResponse{
 			ResponseType: types.ResponseTypeAnswer,
 			Done:         true,

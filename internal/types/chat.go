@@ -30,6 +30,11 @@ type TokenUsage struct {
 	CacheMissTokens  int               `json:"cache_miss_tokens,omitempty"`
 	CacheReported    bool              `json:"cache_reported"`
 	CacheStatus      PromptCacheStatus `json:"cache_status,omitempty"`
+	// ContextTokenScale is provider prompt tokens per cl100k-estimated token,
+	// measured over the turn's rounds. Persisted with the turn so the next
+	// turn's history loading and first compaction check are calibrated before
+	// any provider count of their own. Zero when the turn measured none.
+	ContextTokenScale float64 `json:"context_token_scale,omitempty"`
 }
 
 // SetPromptCacheUsage normalizes provider-specific cache counters into the
@@ -91,6 +96,10 @@ func (u *TokenUsage) Accumulate(other TokenUsage) {
 	u.CacheWriteTokens += other.CacheWriteTokens
 	u.CacheMissTokens += other.CacheMissTokens
 	u.CacheReported = u.CacheReported || other.CacheReported
+	// A scale is a ratio, not a count: the newest measurement stands.
+	if other.ContextTokenScale > 0 {
+		u.ContextTokenScale = other.ContextTokenScale
+	}
 	switch {
 	case !u.CacheReported:
 		u.CacheStatus = mergeUnreportedCacheStatus(u.CacheStatus, other.CacheStatus)
@@ -177,6 +186,12 @@ type LLMToolCall struct {
 // with the assistant tool call, without teaching core agent code vendor fields.
 type ToolCallMetadata map[string]json.RawMessage
 
+// ProviderMetadata carries opaque provider state attached to an assistant
+// turn as a whole (OpenAI Responses reasoning items, OpenRouter
+// reasoning_details, ...). Keyed by protocol / vendor namespace so several
+// providers can coexist on one persisted message without collisions.
+type ProviderMetadata map[string]json.RawMessage
+
 // FunctionCall represents the function details
 type FunctionCall struct {
 	Name      string `json:"name"`
@@ -188,10 +203,16 @@ type ChatResponse struct {
 	Content string `json:"content"`
 	// ReasoningContent 是支持思考链的模型（DeepSeek thinking、小米 MiMo、vLLM reasoning 等）
 	// 在本轮输出的推理内容。需要在后续多轮请求中原样回传给那些严格校验的供应商。
-	ReasoningContent string        `json:"reasoning_content,omitempty"`
-	ToolCalls        []LLMToolCall `json:"tool_calls,omitempty"`
-	FinishReason     string        `json:"finish_reason,omitempty"`
-	Usage            TokenUsage    `json:"usage"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// ReasoningSignature and ReasoningMetadata are the provider-issued
+	// artifacts that must be replayed together with ReasoningContent on the
+	// next turn (Anthropic thinking signatures, Gemini thought signatures,
+	// OpenAI Responses encrypted reasoning items).
+	ReasoningSignature string           `json:"reasoning_signature,omitempty"`
+	ReasoningMetadata  ProviderMetadata `json:"reasoning_metadata,omitempty"`
+	ToolCalls          []LLMToolCall    `json:"tool_calls,omitempty"`
+	FinishReason       string           `json:"finish_reason,omitempty"`
+	Usage              TokenUsage       `json:"usage"`
 
 	// AnswerStreamed reports whether the user-facing answer text was already
 	// streamed live to the final-answer UI area during this round (i.e. the
@@ -217,10 +238,25 @@ const (
 	ResponseTypeReferences ResponseType = "references"
 	// Thinking response type (for agent thought process)
 	ResponseTypeThinking ResponseType = "thinking"
+	// ResponseTypeProgress carries a user-visible intermediate update.
+	ResponseTypeProgress ResponseType = "progress"
 	// Tool call response type (for agent tool invocations)
 	ResponseTypeToolCall ResponseType = "tool_call"
 	// Tool result response type (for agent tool results)
 	ResponseTypeToolResult ResponseType = "tool_result"
+	// ResponseTypeInstallOutput carries installer progress without completing a tool.
+	ResponseTypeInstallOutput ResponseType = "install_output"
+	// ResponseTypeCommandOutput updates the pending tool card without completing it.
+	ResponseTypeCommandOutput ResponseType = "command_output"
+	// ResponseTypeWorkStarted is a background work event of shared design §7.
+	// Features emit it through service.BackgroundEventEmitter, which picks the stream.
+	ResponseTypeWorkStarted ResponseType = "work_started"
+	// ResponseTypeWorkEvent is a background work event of shared design §7.
+	// Features emit it through service.BackgroundEventEmitter, which picks the stream.
+	ResponseTypeWorkEvent ResponseType = "work_event"
+	// ResponseTypeWorkFinished is a background work event of shared design §7.
+	// Features emit it through service.BackgroundEventEmitter, which picks the stream.
+	ResponseTypeWorkFinished ResponseType = "work_finished"
 	// Error response type
 	ResponseTypeError ResponseType = "error"
 	// Reflection response type (for agent reflection)
@@ -236,10 +272,22 @@ const (
 	// The UI shows a toolbar placeholder until ResponseTypeComplete carries
 	// the file list.
 	ResponseTypeArtifactsPending ResponseType = "artifacts_pending"
+	// ResponseTypeRunSuspended precedes complete when the run ended waiting
+	// on a user prompt; the message stays incomplete until it is answered.
+	ResponseTypeRunSuspended ResponseType = "run_suspended"
+	// ResponseTypeRunResumed opens the stream of a suspended run resumed
+	// after its prompt was answered. Steps saved before the suspension are
+	// not replayed; the client keeps the ones it already shows.
+	ResponseTypeRunResumed ResponseType = "run_resumed"
 	// ToolApprovalRequired: MCP tool marked dangerous — UI must collect user approval before execution continues
 	ResponseTypeToolApprovalRequired ResponseType = "tool_approval_required"
 	// ToolApprovalResolved: user approved/rejected (or timeout); informational for UI replay
 	ResponseTypeToolApprovalResolved ResponseType = "tool_approval_resolved"
+	// ResponseTypeAgentPromptRequired indicates that the agent asks the user something (ask_user);
+	// data carries the prompt kind and its request JSON.
+	ResponseTypeAgentPromptRequired ResponseType = "agent_prompt_required"
+	// ResponseTypeAgentPromptResolved indicates an answered, declined, timed out or canceled prompt.
+	ResponseTypeAgentPromptResolved ResponseType = "agent_prompt_resolved"
 	// MCPOAuthRequired: an OAuth-enabled MCP service was invoked but the user
 	// has not authorized it — UI must surface an "Authorize" prompt and the
 	// agent pauses until authorization completes (or the wait times out).
@@ -250,6 +298,21 @@ const (
 	// MemoryRecalled: the long-term memories injected into this answer, so
 	// the UI can show and let the user delete what influenced it.
 	ResponseTypeMemoryRecalled ResponseType = "memory_recalled"
+	// ResponseTypeSteer is the per-run control signal a client POSTs while a
+	// turn is still running. It rides the same StreamManager keyspace as the
+	// stop event but in a dedicated sub-list (AppendSteerEvents/GetSteerEvents)
+	// so it never appears on the user-visible SSE stream. The running engine
+	// drains it at the next round boundary (SteerSink.PollSteer) or, when the
+	// loop has already exited, the run's teardown paths hand it to the next
+	// run — unless the turn was stopped, in which case it is discarded.
+	ResponseTypeSteer ResponseType = "steer"
+	// ResponseTypeUserMessageInjected is emitted on the user-visible stream
+	// right after a steered message was accepted into the running turn: a
+	// user-role DB row has been persisted under the run's request_id and the
+	// text was appended to the agent's message list. The frontend uses it to
+	// move the queued message out of the composer overlay and into the
+	// transcript.
+	ResponseTypeUserMessageInjected ResponseType = "user_message_injected"
 	// ResponseTypeContextCompacted is older conversation summarized away to
 	// fit the context window. Surfaced because it changes what the agent
 	// remembers — an answer that forgets an earlier instruction is otherwise
@@ -269,6 +332,11 @@ const (
 // were collected are a partial response: callers must not treat them as a
 // completed turn.
 const FinishReasonIncomplete = "incomplete"
+
+// StreamEndedEarlyError is what a consumer reports for an answer that arrived
+// with FinishReasonIncomplete: the stream stopped before the provider said the
+// message was finished, most often because a proxy cut the connection.
+const StreamEndedEarlyError = "the model's response ended before it finished (connection interrupted)"
 
 type StreamResponse struct {
 	ID                  string                 `json:"id"`

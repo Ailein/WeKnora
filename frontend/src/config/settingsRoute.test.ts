@@ -9,7 +9,7 @@ import {
   settingsQueryUnchanged,
 } from './settingsRoute'
 
-test('every settings nav item writes only section', () => {
+test('settings nav writes section, and keeps a system-settings panel only there', () => {
   assert.deepEqual(
     buildSettingsRouteQuery('models', {
       section: 'system-global',
@@ -25,6 +25,18 @@ test('every settings nav item writes only section', () => {
   assert.deepEqual(
     buildSettingsRouteQuery('runtime-queues', { section: 'system-global' }),
     { section: 'runtime-queues' },
+  )
+  assert.deepEqual(
+    buildSettingsRouteQuery('system-global', { section: 'system-global', panel: 'users', tab: 'im' }),
+    { section: 'system-global', panel: 'users' },
+  )
+  assert.deepEqual(
+    buildSettingsRouteQuery('models', { section: 'system-global', panel: 'users' }),
+    { section: 'models' },
+  )
+  assert.deepEqual(
+    buildSettingsRouteQuery('system-global', { section: 'system-global', panel: 'billing' }),
+    { section: 'system-global' },
   )
   assert.deepEqual(
     buildSettingsRouteQuery(integrationSectionKey('claw'), {
@@ -46,11 +58,17 @@ test('every settings nav item writes only section', () => {
 test('legacy api / integrations / bare-tab query strings normalize to nav keys', () => {
   assert.equal(normalizeSettingsSection('api'), 'integration-api')
   assert.equal(normalizeSettingsSection('claw'), 'integration-claw')
+  assert.equal(normalizeSettingsSection('cli'), 'integration-cli')
+  assert.equal(normalizeSettingsSection('mcpserver'), 'integration-mcpserver')
+  // 'mcp' is the MCP-client settings page, not the MCP server integration tab.
+  assert.equal(normalizeSettingsSection('mcp'), 'mcp')
+  assert.equal(normalizeSettingsSection('integrations', 'cli'), 'integration-cli')
   assert.equal(normalizeSettingsSection('integrations', 'embed'), 'integration-embed')
   assert.equal(normalizeSettingsSection('integrations'), 'integration-im')
   assert.equal(normalizeSettingsSection('integration-chrome'), 'integration-chrome')
   assert.equal(normalizeSettingsSection('system-global'), 'system-global')
   assert.equal(isIntegrationSection('integration-chrome'), true)
+  assert.equal(isIntegrationSection('integration-cli'), true)
   assert.equal(isIntegrationSection('models'), false)
   assert.equal(isIntegrationSection('integration-unknown'), false)
 })
@@ -67,6 +85,13 @@ test('canonical settings query skips a redundant replace', () => {
     settingsQueryUnchanged(
       { section: 'integrations', tab: 'claw' },
       { section: 'integration-claw' },
+    ),
+    false,
+  )
+  assert.equal(
+    settingsQueryUnchanged(
+      { section: 'system-global', panel: 'users' },
+      { section: 'system-global', panel: 'access' },
     ),
     false,
   )

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Tencent/WeKnora/internal/application/access"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -39,7 +40,7 @@ type KnowledgeAutoTagService struct {
 	knowledgeRepo interfaces.KnowledgeRepository
 	tagRepo       interfaces.KnowledgeTagRepository
 	kbService     interfaces.KnowledgeBaseService
-	chunkService  interfaces.ChunkService
+	chunkRepo     interfaces.ChunkRepository
 	modelService  interfaces.ModelService
 	spanTracker   SpanTracker
 }
@@ -49,7 +50,7 @@ func NewKnowledgeAutoTagService(
 	knowledgeRepo interfaces.KnowledgeRepository,
 	tagRepo interfaces.KnowledgeTagRepository,
 	kbService interfaces.KnowledgeBaseService,
-	chunkService interfaces.ChunkService,
+	chunkRepo interfaces.ChunkRepository,
 	modelService interfaces.ModelService,
 	spanTracker SpanTracker,
 ) interfaces.TaskHandler {
@@ -57,7 +58,7 @@ func NewKnowledgeAutoTagService(
 		knowledgeRepo: knowledgeRepo,
 		tagRepo:       tagRepo,
 		kbService:     kbService,
-		chunkService:  chunkService,
+		chunkRepo:     chunkRepo,
 		modelService:  modelService,
 		spanTracker:   spanTracker,
 	}
@@ -113,7 +114,7 @@ func (s *KnowledgeAutoTagService) Handle(ctx context.Context, task *asynq.Task) 
 	if err := json.Unmarshal(task.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal knowledge auto tag payload: %w", err)
 	}
-	ctx = context.WithValue(ctx, types.TenantIDContextKey, payload.TenantID)
+	ctx = types.WithExecutionTenant(ctx, payload.TenantID)
 	if payload.Language != "" {
 		ctx = context.WithValue(ctx, types.LanguageContextKey, payload.Language)
 	}
@@ -152,6 +153,10 @@ func (s *KnowledgeAutoTagService) Handle(ctx context.Context, task *asynq.Task) 
 	}
 	if kb == nil || kb.TenantID != payload.TenantID || kb.Type != types.KnowledgeBaseTypeDocument {
 		return skip("knowledge_base_not_eligible", nil)
+	}
+	ctx, err = access.WithKBTaskWrite(ctx, kb, payload.TenantID)
+	if err != nil {
+		return err
 	}
 	config := kb.AutoTagConfig
 	if config == nil || !config.Enabled {
@@ -212,11 +217,19 @@ func (s *KnowledgeAutoTagService) Handle(ctx context.Context, task *asynq.Task) 
 		return skip("model_not_configured", nil)
 	}
 
-	chunks, err := s.chunkService.ListChunksByKnowledgeID(ctx, payload.KnowledgeID)
+	// Ask for the image-derived chunk types too, the same way summary
+	// enrichment (getSummary), graph post-processing and wiki ingest do: for a
+	// scanned PDF parsed with OCR, the text chunks hold only image-reference
+	// placeholders while the real content lives in the image_ocr children.
+	// buildAutoTagDocumentContent already accepts these chunk types — until
+	// now the text-only fetch below could never deliver them.
+	chunks, err := s.chunkRepo.ListChunksByKnowledgeIDAndTypes(ctx, payload.TenantID, payload.KnowledgeID,
+		[]types.ChunkType{types.ChunkTypeText, types.ChunkTypeImageOCR, types.ChunkTypeImageCaption})
 	if err != nil {
 		s.tracker().FailSpan(ctx, span, "AUTO_TAG_LIST_CHUNKS_FAILED", err.Error(), err)
 		return fmt.Errorf("list chunks for auto tag: %w", err)
 	}
+	inheritParentStartAt(chunks)
 	content := buildAutoTagDocumentContent(knowledge, chunks)
 	if strings.TrimSpace(content) == "" {
 		return skip("no_text_chunks", nil)
@@ -251,6 +264,9 @@ func (s *KnowledgeAutoTagService) Handle(ctx context.Context, task *asynq.Task) 
 	if len(added) == 0 {
 		return skip("all_matches_already_attached", types.JSONMap{"matched_tag_count": len(validIDs)})
 	}
+	if err := access.RequireKBWrite(ctx, kb); err != nil {
+		return err
+	}
 	if err := s.knowledgeRepo.AddKnowledgeTagRelations(
 		ctx,
 		payload.TenantID,
@@ -272,6 +288,28 @@ func (s *KnowledgeAutoTagService) Handle(ctx context.Context, task *asynq.Task) 
 		"model_id":              modelID,
 	})
 	return nil
+}
+
+// inheritParentStartAt gives image children created without a StartAt (the
+// multimodal enrichment path) their text parent's position so the stable
+// document-order sort in buildAutoTagDocumentContent keeps each parent's
+// OCR/caption text adjacent to it instead of floating zero-valued children to
+// the front. Chunks that already carry a real StartAt are left untouched.
+func inheritParentStartAt(chunks []*types.Chunk) {
+	parentStartAt := make(map[string]int, len(chunks))
+	for _, c := range chunks {
+		if c != nil && c.ChunkType == types.ChunkTypeText {
+			parentStartAt[c.ID] = c.StartAt
+		}
+	}
+	for _, c := range chunks {
+		if c == nil || c.ParentChunkID == "" || c.StartAt != 0 {
+			continue
+		}
+		if startAt, ok := parentStartAt[c.ParentChunkID]; ok {
+			c.StartAt = startAt
+		}
+	}
 }
 
 func buildAutoTagDocumentContent(knowledge *types.Knowledge, chunks []*types.Chunk) string {

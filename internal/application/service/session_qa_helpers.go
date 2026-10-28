@@ -3,11 +3,26 @@ package service
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/types"
+	secutils "github.com/Tencent/WeKnora/internal/utils"
 )
+
+// applyRequestReasoningEffort only changes runtime options, never the saved agent.
+// Empty requests preserve both the graded default and legacy Thinking boolean.
+func applyRequestReasoningEffort(override string, thinking **bool, effort *string) {
+	level, ok := api.ParseReasoningEffort(override)
+	if !ok || level == "" {
+		return
+	}
+	enabled := level.Enabled()
+	*thinking = &enabled
+	*effort = string(level)
+}
 
 // ---------------------------------------------------------------------------
 // Shared QA helpers: KB resolution, model resolution, retrieval tenant
@@ -44,7 +59,16 @@ func (s *sessionService) resolveKnowledgeBases(
 	} else if customAgent != nil && customAgent.Config.RetrieveKBOnlyWhenMentioned {
 		kbIDs = nil
 		knowledgeIDs = nil
-		logger.Infof(ctx, "RetrieveKBOnlyWhenMentioned is enabled and no @ mention found, KB retrieval disabled for this request")
+		if anchor := s.questionOriginAnchor(ctx, customAgent, req); anchor != "" {
+			// Picking a suggestion generated from a base the agent may read
+			// selects that base, as an @mention would.
+			kbIDs = []string{anchor}
+			logger.Infof(ctx, "RetrieveKBOnlyWhenMentioned: retrieving from the picked suggestion's knowledge base %s",
+				secutils.SanitizeForLog(anchor))
+		} else {
+			logger.Infof(ctx, "RetrieveKBOnlyWhenMentioned is enabled and no @ mention found, "+
+				"KB retrieval disabled for this request")
+		}
 	} else if customAgent != nil {
 		kbIDs = s.resolveKnowledgeBasesFromAgent(ctx, customAgent, req.Session.TenantID)
 	}
@@ -57,6 +81,23 @@ func (s *sessionService) resolveKnowledgeBases(
 		return nil, nil, err
 	}
 	return kbIDs, knowledgeIDs, nil
+}
+
+// questionOriginAnchor returns the knowledge base a picked suggested question
+// came from when the agent is allowed to read it, or "" otherwise. It lets a
+// suggestion work for an agent that retrieves only on @mention, without
+// reaching any base outside the agent's configured scope.
+func (s *sessionService) questionOriginAnchor(
+	ctx context.Context, agent *types.CustomAgent, req *types.QARequest,
+) string {
+	if req.QuestionOrigin == nil || req.Session == nil {
+		return ""
+	}
+	kbID := strings.TrimSpace(req.QuestionOrigin.KnowledgeBaseID)
+	if kbID == "" || !slices.Contains(s.resolveKnowledgeBasesFromAgent(ctx, agent, req.Session.TenantID), kbID) {
+		return ""
+	}
+	return kbID
 }
 
 func (s *sessionService) restrictTagScopesToAgentScope(
@@ -84,7 +125,8 @@ func (s *sessionService) restrictTagScopesToAgentScope(
 	return filtered
 }
 
-// resolveChatModelID resolves the effective chat model ID for a QA request.
+// resolveChatModelID resolves the effective chat model ID and its execution tenant.
+// KB-derived models are scoped only after checking read access to the KB.
 //
 // When a user-configured agent is selected, its model configuration must be
 // complete and valid. The internal wiki fixer is the one exception: it is not
@@ -92,35 +134,42 @@ func (s *sessionService) restrictTagScopesToAgentScope(
 // selection. A request-level override may choose another valid model for this
 // request, but it must not make an unconfigured or stale agent appear usable.
 //
-// Without an agent, the legacy KB / session / system fallback remains
+// Without an agent, the KB / system fallback remains
 // available for non-agent callers.
 func (s *sessionService) resolveChatModelID(
 	ctx context.Context,
 	req *types.QARequest,
 	knowledgeBaseIDs []string,
 	knowledgeIDs []string,
-) (string, error) {
+) (string, uint64, error) {
 	summaryModelID := req.SummaryModelID
 	customAgent := req.CustomAgent
-	session := req.Session
+	tenantID, _ := types.TenantIDFromContext(ctx)
 	configuredAgentModelID := ""
+	// A shared agent runs in its owner's workspace, where an override could
+	// pick any of the owner's models rather than the one the agent was
+	// configured with.
+	if req.SharedAgentReadOnly {
+		summaryModelID = ""
+	}
 
 	if customAgent != nil {
 		configuredAgentModelID = strings.TrimSpace(customAgent.Config.ModelID)
-		if configuredAgentModelID == "" && customAgent.ID != types.BuiltinWikiFixerID {
-			return "", fmt.Errorf("chat model is not configured: please set model_id on agent %s", customAgent.ID)
+		if configuredAgentModelID == "" && !types.UsesWorkspaceModelFallback(customAgent) {
+			return "", 0, fmt.Errorf("chat model is not configured: please set model_id on agent %s", customAgent.ID)
 		}
 		if configuredAgentModelID != "" {
 			model, err := s.modelService.GetModelByID(ctx, configuredAgentModelID)
 			if err != nil || model == nil || model.Type != types.ModelTypeKnowledgeQA {
-				return "", fmt.Errorf("configured chat model %s is unavailable for agent %s", configuredAgentModelID, customAgent.ID)
+				return "", 0, fmt.Errorf(
+					"configured chat model %s is unavailable for agent %s", configuredAgentModelID, customAgent.ID,
+				)
 			}
 		} else {
-			// The wiki fixer is an internal agent and is intentionally omitted
-			// from the agent-management list. It therefore cannot receive a
-			// user-configured model_id; resolve it from the current Wiki KB or
-			// the normal system KnowledgeQA fallback below instead.
-			logger.Infof(ctx, "No model_id configured for internal wiki fixer %s, using KB/system fallback", customAgent.ID)
+			// Internal built-in agents are omitted from the agent-management
+			// list, so they cannot receive a user-configured model_id; resolve
+			// it from the current KB or the system KnowledgeQA fallback below.
+			logger.Infof(ctx, "No model_id configured for internal agent %s, using KB/system fallback", customAgent.ID)
 		}
 	}
 
@@ -129,15 +178,15 @@ func (s *sessionService) resolveChatModelID(
 		if model, err := s.modelService.GetModelByID(ctx, summaryModelID); err == nil && model != nil &&
 			model.Type == types.ModelTypeKnowledgeQA {
 			logger.Infof(ctx, "Using request's summary model override: %s", summaryModelID)
-			return summaryModelID, nil
+			return summaryModelID, tenantID, nil
 		}
 		logger.Warnf(ctx, "Request provided invalid summary model ID %s, falling back", summaryModelID)
 	}
 	if configuredAgentModelID != "" {
 		logger.Infof(ctx, "Using custom agent's model_id: %s", configuredAgentModelID)
-		return configuredAgentModelID, nil
+		return configuredAgentModelID, tenantID, nil
 	}
-	return s.selectChatModelID(ctx, session, knowledgeBaseIDs, knowledgeIDs)
+	return s.selectChatModelID(ctx, knowledgeBaseIDs, knowledgeIDs)
 }
 
 // resolveRetrievalTenantID determines the tenant ID to use for retrieval scope.
@@ -179,13 +228,14 @@ func (s *sessionService) applyAgentOverridesToChatManage(
 	// Ensure defaults are set
 	customAgent.EnsureDefaults()
 
-	// Override summary config fields
-	if customAgent.Config.SystemPrompt != "" {
-		cm.SummaryConfig.Prompt = customAgent.Config.SystemPrompt
+	// Resolve inherited templates at request time; saved custom text remains authoritative.
+	systemPrompt, contextTemplate := s.cfg.ResolveCustomAgentPrompts(customAgent)
+	if systemPrompt != "" {
+		cm.SummaryConfig.Prompt = systemPrompt
 		logger.Infof(ctx, "Using custom agent's system_prompt")
 	}
-	if customAgent.Config.ContextTemplate != "" {
-		cm.SummaryConfig.ContextTemplate = customAgent.Config.ContextTemplate
+	if contextTemplate != "" {
+		cm.SummaryConfig.ContextTemplate = contextTemplate
 		logger.Infof(ctx, "Using custom agent's context_template")
 	}
 	if customAgent.Config.Temperature >= 0 {
@@ -200,6 +250,7 @@ func (s *sessionService) applyAgentOverridesToChatManage(
 	// EnsureDefaults pins nil to explicit false so thinking_control wire formats
 	// always receive a value.
 	cm.SummaryConfig.Thinking = customAgent.Config.Thinking
+	cm.SummaryConfig.ReasoningEffort = customAgent.Config.ReasoningEffort
 	cm.CitationEnabled = customAgent.Config.CitationEnabled
 	if customAgent.Config.Thinking != nil {
 		logger.Infof(ctx, "Using custom agent's thinking: %v", *customAgent.Config.Thinking)

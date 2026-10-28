@@ -211,9 +211,9 @@ onMounted(() => {
 .im-analytics {
   margin-top: 32px;
   padding: 20px;
-  border: 1px solid var(--td-component-border, #e7e7e7);
-  border-radius: 12px;
-  background: var(--td-bg-color-container, #fff);
+  border: 1px solid var(--td-component-border);
+  border-radius: var(--app-radius-xl);
+  background: var(--td-bg-color-container);
 }
 
 .im-analytics__header {
@@ -233,14 +233,14 @@ onMounted(() => {
 
 .im-analytics__title {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--app-text-xl);
   font-weight: 600;
-  color: var(--td-text-color-primary, #000);
+  color: var(--td-text-color-primary);
 }
 
 .im-analytics__range-hint {
-  font-size: 12px;
-  color: var(--td-text-color-placeholder, #999);
+  font-size: var(--app-text-sm);
+  color: var(--td-text-color-placeholder);
 }
 
 .im-analytics__controls {
@@ -265,31 +265,31 @@ onMounted(() => {
   flex-direction: column;
   gap: 4px;
   padding: 12px 14px;
-  border-radius: 10px;
-  background: var(--td-bg-color-secondarycontainer, #f5f6f7);
+  border-radius: var(--app-radius-lg);
+  background: var(--td-bg-color-secondarycontainer);
 }
 
 .im-analytics__card-label {
-  font-size: 12px;
-  color: var(--td-text-color-secondary, #666);
+  font-size: var(--app-text-sm);
+  color: var(--td-text-color-secondary);
 }
 
 .im-analytics__card-value {
-  font-size: 20px;
+  font-size: var(--app-text-3xl);
   font-weight: 600;
-  color: var(--td-text-color-primary, #000);
+  color: var(--td-text-color-primary);
   font-variant-numeric: tabular-nums;
 }
 
 .im-analytics__card-hint {
-  font-size: 11px;
-  color: var(--td-warning-color, #e37318);
+  font-size: var(--app-text-xs);
+  color: var(--td-warning-color);
 }
 
 .im-analytics__block-title {
-  font-size: 13px;
+  font-size: var(--app-text-md);
   font-weight: 600;
-  color: var(--td-text-color-primary, #000);
+  color: var(--td-text-color-primary);
 }
 
 .im-analytics__chart-block {
@@ -307,22 +307,22 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  color: var(--td-text-color-secondary, #666);
+  font-size: var(--app-text-sm);
+  color: var(--td-text-color-secondary);
 }
 
 .im-analytics__dot {
   width: 8px;
   height: 8px;
-  border-radius: 2px;
+  border-radius: calc(var(--app-radius-xs) / 2);
   display: inline-block;
 
   &--user {
-    background: var(--td-brand-color, #0052d9);
+    background: var(--td-brand-color);
   }
 
   &--bot {
-    background: var(--td-success-color, #2ba471);
+    background: var(--td-success-color);
   }
 }
 
@@ -332,7 +332,7 @@ onMounted(() => {
   gap: 2px;
   height: 160px;
   padding: 8px 4px 0;
-  border-bottom: 1px solid var(--td-component-border, #e7e7e7);
+  border-bottom: 1px solid var(--td-component-border);
 }
 
 .im-analytics__col {
@@ -356,30 +356,30 @@ onMounted(() => {
 .im-analytics__bar {
   flex: 1;
   min-height: 1px;
-  border-radius: 2px 2px 0 0;
+  border-radius: calc(var(--app-radius-xs) / 2) calc(var(--app-radius-xs) / 2) 0 0;
 
   &--user {
-    background: var(--td-brand-color, #0052d9);
+    background: var(--td-brand-color);
   }
 
   &--bot {
-    background: var(--td-success-color, #2ba471);
+    background: var(--td-success-color);
   }
 }
 
 .im-analytics__col-label {
   height: 16px;
   margin-top: 2px;
-  font-size: 10px;
-  color: var(--td-text-color-placeholder, #999);
+  font-size: var(--app-text-2xs);
+  color: var(--td-text-color-placeholder);
   white-space: nowrap;
 }
 
 .im-analytics__empty {
   padding: 40px 0;
   text-align: center;
-  font-size: 13px;
-  color: var(--td-text-color-placeholder, #999);
+  font-size: var(--app-text-md);
+  color: var(--td-text-color-placeholder);
 }
 
 .im-analytics__tables {
@@ -392,19 +392,19 @@ onMounted(() => {
   width: 100%;
   margin-top: 8px;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--app-text-md);
 
   th,
   td {
     padding: 6px 8px;
     text-align: left;
-    border-bottom: 1px solid var(--td-component-stroke, #f0f0f0);
-    color: var(--td-text-color-primary, #333);
+    border-bottom: 1px solid var(--td-component-stroke);
+    color: var(--td-text-color-primary);
   }
 
   th {
     font-weight: 500;
-    color: var(--td-text-color-secondary, #666);
+    color: var(--td-text-color-secondary);
   }
 }
 
@@ -422,6 +422,6 @@ onMounted(() => {
 
 .im-analytics__table-empty {
   text-align: center;
-  color: var(--td-text-color-placeholder, #999);
+  color: var(--td-text-color-placeholder);
 }
 </style>

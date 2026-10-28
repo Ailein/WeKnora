@@ -25,7 +25,7 @@
       :close-on-overlay-click="true"
       :destroy-on-close="false"
       attach="body"
-      :z-index="3000"
+      :z-index="2300"
     >
       <div class="drawer-body">
         <!-- Input section -->
@@ -99,6 +99,9 @@
               <span v-if="fallbackWarning" class="fallback-warning">
                 {{ $t('knowledgeEditor.chunking.debug.fallbackWarning') }}
               </span>
+              <AssistantActionButton class="chunk-analysis-action"
+                :label="$t('assistant.actions.analyzeChunks')" :query="$t('assistant.prompts.analyzeChunks')"
+                :selection="assistantPreviewSelection" />
             </div>
             <div v-if="(result.rejected || []).length > 0" class="tier-row">
               <span class="result-label">{{ $t('knowledgeEditor.chunking.debug.rejected') }}:</span>
@@ -216,7 +219,8 @@ import {
   ErrorCircleIcon,
 } from 'tdesign-icons-vue-next'
 import { previewChunking } from '@/api/chunker'
-import type { PreviewChunkingResponse, StrategyTier } from '@/types/chunker'
+import type { PreviewChunkingRequest, PreviewChunkingResponse, StrategyTier } from '@/types/chunker'
+import AssistantActionButton from '@/components/assistant/AssistantActionButton.vue'
 import { CHUNKING_SAMPLES, DEFAULT_SAMPLE_ID } from './chunkingSamples'
 
 interface Props {
@@ -244,7 +248,28 @@ const sample = ref('')
 const loading = ref(false)
 const error = ref('')
 const result = ref<PreviewChunkingResponse | null>(null)
+const previewInput = ref<PreviewChunkingRequest | null>(null)
 const expandedChunks = ref(new Set<number>())
+
+const assistantPreviewSelection = computed(() => {
+  const input = previewInput.value
+  const output = result.value
+  if (!input || !output) return undefined
+  return {
+    field: t('knowledgeEditor.chunking.debug.toggle'),
+    // The backend accepts at most 4000 selection characters. Keep parameters,
+    // statistics and both kinds of excerpt within that budget.
+    text: [
+      'Preview excerpts (not the full document):',
+      `Parameters: ${JSON.stringify(input.chunking_config)}`,
+      `Selected strategy: ${output.selected_tier}`,
+      `Statistics: ${JSON.stringify(output.stats)}`,
+      `Original text excerpt:\n${input.text.slice(0, 900)}`,
+      ...output.chunks.slice(0, 3).map(chunk =>
+        `Chunk #${chunk.seq} [${chunk.start}–${chunk.end}], ${chunk.size_chars} characters:\n${chunk.content.slice(0, 600)}`),
+    ].join('\n\n').slice(0, 4000),
+  }
+})
 
 const samples = CHUNKING_SAMPLES
 
@@ -264,6 +289,7 @@ const loadSample = (id: string) => {
   // Clear any previous run so the user isn't looking at stale results
   // attributed to the old text.
   result.value = null
+  previewInput.value = null
   error.value = ''
   expandedChunks.value = new Set()
 }
@@ -277,25 +303,27 @@ const runPreview = async () => {
   loading.value = true
   error.value = ''
   result.value = null
+  previewInput.value = null
   expandedChunks.value = new Set()
   try {
     // Send all fields explicitly (including empty / 0 / []) so the
     // preview faithfully reflects what would happen on save. Mirrors
     // the buildSubmitData convention in KnowledgeBaseEditorModal.
-    const resp = await previewChunking({
+    const input: PreviewChunkingRequest = {
       text: sample.value,
       chunking_config: {
         chunk_size: props.config.chunkSize,
         chunk_overlap: props.config.chunkOverlap,
-        separators: props.config.separators,
+        separators: [...props.config.separators],
         enable_parent_child: props.config.enableParentChild,
         parent_chunk_size: props.config.parentChunkSize,
         child_chunk_size: props.config.childChunkSize,
         strategy: props.config.strategy ?? '',
         token_limit: props.config.tokenLimit ?? 0,
-        languages: props.config.languages ?? []
+        languages: [...(props.config.languages ?? [])]
       }
-    })
+    }
+    const resp = await previewChunking(input)
     // The axios interceptor in utils/request.ts already unwraps the
     // outer envelope and returns the response body. So resp here is
     // { success: true, data: PreviewChunkingResponse } directly.
@@ -310,6 +338,7 @@ const runPreview = async () => {
     if (!resp.data) {
       throw new Error('response missing data')
     }
+    previewInput.value = input
     result.value = resp.data
   } catch (e: any) {
     // Pull a useful message out of the error shapes our request layer
@@ -361,6 +390,10 @@ const tierTheme = (tier: StrategyTier) => {
 </script>
 
 <style lang="less" scoped>
+.chunk-analysis-action {
+  margin-left: auto;
+}
+
 .kb-chunking-debug {
   flex-shrink: 0;
 }
@@ -410,7 +443,7 @@ const tierTheme = (tier: StrategyTier) => {
 }
 
 .section-title {
-  font-size: 13px;
+  font-size: var(--app-text-md);
   font-weight: 500;
   color: var(--td-text-color-primary);
 }
@@ -422,7 +455,7 @@ const tierTheme = (tier: StrategyTier) => {
   flex-wrap: wrap;
 
   .presets-label {
-    font-size: 12px;
+    font-size: var(--app-text-sm);
     color: var(--td-text-color-placeholder);
     margin-right: 4px;
   }
@@ -430,7 +463,7 @@ const tierTheme = (tier: StrategyTier) => {
   .preset-chip {
     --td-comp-paddinglr-s: 8px;
     color: var(--td-text-color-secondary);
-    font-size: 12px;
+    font-size: var(--app-text-sm);
 
     &:hover {
       color: var(--td-brand-color);
@@ -456,8 +489,8 @@ const tierTheme = (tier: StrategyTier) => {
   gap: 10px;
   padding: 12px 14px;
   background: var(--td-bg-color-container-hover);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: var(--app-radius-sm);
+  font-size: var(--app-text-md);
   color: var(--td-text-color-secondary);
 }
 
@@ -467,14 +500,14 @@ const tierTheme = (tier: StrategyTier) => {
   gap: 10px;
   padding: 12px 14px;
   background: var(--td-error-color-light);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: var(--app-radius-sm);
+  font-size: var(--app-text-md);
   color: var(--td-error-color);
 
   .error-icon {
     flex-shrink: 0;
     margin-top: 2px;
-    font-size: 16px;
+    font-size: var(--app-text-xl);
   }
 
   strong {
@@ -503,7 +536,7 @@ const tierTheme = (tier: StrategyTier) => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: var(--app-text-md);
 }
 
 .result-label {
@@ -520,7 +553,7 @@ const tierTheme = (tier: StrategyTier) => {
 
 .fallback-warning {
   color: var(--td-warning-color);
-  font-size: 12px;
+  font-size: var(--app-text-sm);
 }
 
 .profile-grid {
@@ -530,7 +563,7 @@ const tierTheme = (tier: StrategyTier) => {
   margin-bottom: 16px;
   background: var(--td-component-stroke);
   border: 1px solid var(--td-component-stroke);
-  border-radius: 6px;
+  border-radius: var(--app-radius-sm);
   overflow: hidden;
 }
 
@@ -541,7 +574,7 @@ const tierTheme = (tier: StrategyTier) => {
 }
 
 .cell-value {
-  font-size: 18px;
+  font-size: var(--app-text-2xl);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--td-text-color-primary);
@@ -550,7 +583,7 @@ const tierTheme = (tier: StrategyTier) => {
 
 .cell-label {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--app-text-xs);
   color: var(--td-text-color-secondary);
 }
 
@@ -562,15 +595,15 @@ const tierTheme = (tier: StrategyTier) => {
   margin-bottom: 12px;
   padding: 10px 14px;
   background: var(--td-bg-color-container-hover);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: var(--app-radius-sm);
+  font-size: var(--app-text-md);
   color: var(--td-text-color-secondary);
   font-variant-numeric: tabular-nums;
 
   .stats-count strong {
     margin-right: 4px;
     color: var(--td-text-color-primary);
-    font-size: 14px;
+    font-size: var(--app-text-base);
     font-weight: 600;
   }
 
@@ -582,7 +615,7 @@ const tierTheme = (tier: StrategyTier) => {
 .truncation-hint {
   margin-left: auto;
   color: var(--td-warning-color);
-  font-size: 12px;
+  font-size: var(--app-text-sm);
 }
 
 .chunks-list {
@@ -596,10 +629,10 @@ const tierTheme = (tier: StrategyTier) => {
 
 .chunk-card {
   border: 1px solid var(--td-component-stroke);
-  border-radius: 6px;
+  border-radius: var(--app-radius-sm);
   background: var(--td-bg-color-container);
   overflow: hidden;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color var(--app-motion-fast) ease, box-shadow var(--app-motion-fast) ease;
 
   &.expanded {
     border-color: var(--td-brand-color-light-active);
@@ -617,7 +650,7 @@ const tierTheme = (tier: StrategyTier) => {
   background: var(--td-bg-color-container-hover);
   border: none;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--app-text-sm);
   color: var(--td-text-color-secondary);
   text-align: left;
 
@@ -652,7 +685,7 @@ const tierTheme = (tier: StrategyTier) => {
 .chunk-pos {
   flex-shrink: 0;
   color: var(--td-text-color-placeholder);
-  font-family: var(--td-font-family-mono, ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace);
+  font-family: var(--td-font-family-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -663,9 +696,9 @@ const tierTheme = (tier: StrategyTier) => {
   padding: 2px 8px;
   background: var(--td-brand-color-light);
   color: var(--td-brand-color);
-  border-radius: 10px;
-  font-size: 11px;
-  font-family: var(--td-font-family-mono, ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace);
+  border-radius: var(--app-radius-lg);
+  font-size: var(--app-text-xs);
+  font-family: var(--td-font-family-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -674,9 +707,9 @@ const tierTheme = (tier: StrategyTier) => {
 .chunk-toggle {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 16px;
+  font-size: var(--app-text-xl);
   color: var(--td-text-color-secondary);
-  transition: transform 0.15s ease;
+  transition: transform var(--app-motion-fast) ease;
 
   &.open {
     transform: rotate(180deg);
@@ -696,7 +729,7 @@ const tierTheme = (tier: StrategyTier) => {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--td-text-color-primary);
-  font-family: var(--td-font-family-mono, ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace);
+  font-family: var(--td-font-family-mono);
 }
 
 // Collapsed preview: clamp the visible lines so each card stays compact, but

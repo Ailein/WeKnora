@@ -8,42 +8,76 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/utils"
 	"github.com/chromedp/chromedp"
+	"golang.org/x/net/html/charset"
+	"golang.org/x/text/encoding"
 )
 
 const (
-	fetchTimeout         = 60 * time.Second
-	pipelineFetchTimeout = 15 * time.Second
-	maxBodySize          = 100 * 1024
+	// Bound interactive reads; explicit environment overrides remain supported.
+	defaultPageFetchTimeout = 30 * time.Second
+	pipelineFetchTimeout    = 15 * time.Second
+	maxBodySize             = 100 * 1024
+	maxAgentBodySize        = 2 * 1024 * 1024
 )
+
+// PageFetchTimeout is the shared budget for one agent web_fetch page read.
+// The HTTP client, the fetch context, and chromedp all use this value.
+// Chromedp's deadline is a child of the fetch context, so the budgets do not add.
+//
+// WEKNORA_WEB_FETCH_TIMEOUT accepts a Go duration (150s, 3m) or a bare positive
+// number of seconds (180), the same pattern as WEKNORA_AGENT_LLM_TIMEOUT.
+// Empty, invalid, and non-positive values use defaultPageFetchTimeout.
+func PageFetchTimeout() time.Duration {
+	value := strings.TrimSpace(os.Getenv("WEKNORA_WEB_FETCH_TIMEOUT"))
+	if value == "" {
+		return defaultPageFetchTimeout
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil {
+		// Bare number of seconds, for example "180".
+		timeout, err = time.ParseDuration(value + "s")
+	}
+	if err != nil || timeout <= 0 {
+		return defaultPageFetchTimeout
+	}
+	return timeout
+}
 
 // ErrorCode identifies the stage and class of a fetch failure.
 type ErrorCode string
 
+// Fetch failure codes distinguish retryable network errors from permanent failures.
 const (
-	ErrorInvalidURL       ErrorCode = "invalid_url"
-	ErrorDNS              ErrorCode = "dns_failed"
-	ErrorTimeout          ErrorCode = "connection_timeout"
-	ErrorTLS              ErrorCode = "tls_failed"
-	ErrorHTTP403          ErrorCode = "http_403"
-	ErrorHTTP429          ErrorCode = "http_429"
-	ErrorHTTP5xx          ErrorCode = "http_5xx"
-	ErrorHTTPStatus       ErrorCode = "http_status"
-	ErrorSSRFRejected     ErrorCode = "ssrf_rejected"
-	ErrorRedirectRejected ErrorCode = "redirect_rejected"
-	ErrorRead             ErrorCode = "read_failed"
-	ErrorHTMLParse        ErrorCode = "html_parse_failed"
-	ErrorEmptyContent     ErrorCode = "empty_content"
-	ErrorConnection       ErrorCode = "connection_failed"
+	ErrorInvalidURL         ErrorCode = "invalid_url"
+	ErrorDNS                ErrorCode = "dns_failed"
+	ErrorTimeout            ErrorCode = "connection_timeout"
+	ErrorTLS                ErrorCode = "tls_failed"
+	ErrorHTTP403            ErrorCode = "http_403"
+	ErrorHTTP429            ErrorCode = "http_429"
+	ErrorHTTP5xx            ErrorCode = "http_5xx"
+	ErrorHTTPStatus         ErrorCode = "http_status"
+	ErrorSSRFRejected       ErrorCode = "ssrf_rejected"
+	ErrorRedirectRejected   ErrorCode = "redirect_rejected"
+	ErrorRead               ErrorCode = "read_failed"
+	ErrorHTMLParse          ErrorCode = "html_parse_failed"
+	ErrorEmptyContent       ErrorCode = "empty_content"
+	ErrorConnection         ErrorCode = "connection_failed"
+	ErrorBodyTooLarge       ErrorCode = "body_too_large"
+	ErrorUnsupportedContent ErrorCode = "unsupported_content"
+	ErrorSnapshotExpired    ErrorCode = "snapshot_expired"
 )
 
 // FetchError carries stable, machine-readable failure details.
@@ -84,6 +118,7 @@ func ErrorDetails(err error) (ErrorCode, bool, string) {
 
 // Fetcher fetches and extracts public web pages through an SSRF-safe client.
 type Fetcher struct {
+	markdown      bool
 	client        *http.Client
 	timeout       time.Duration
 	maxBodySize   int64
@@ -101,13 +136,17 @@ type pinnedTarget struct {
 }
 
 type httpFetchResult struct {
-	body     []byte
-	finalURL string
+	body        []byte
+	finalURL    string
+	contentType string
 }
 
 // NewFetcher creates a production fetcher with DNS and redirect SSRF guards.
 func NewFetcher() *Fetcher {
-	return newFetcher(fetchTimeout, renderWithChromium)
+	f := newFetcher(PageFetchTimeout(), renderWithChromium)
+	f.markdown = true
+	f.maxBodySize = maxAgentBodySize
+	return f
 }
 
 // NewPipelineFetcher creates an HTTP-only fetcher for the chat pipeline.
@@ -159,16 +198,26 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (string, error) {
 	defer cancel()
 	httpResult, httpErr := f.fetchHTTP(requestCtx, rawURL, parsedURL)
 	if httpErr == nil {
-		content, parseErr := htmlToText(string(httpResult.body))
-		requiresBrowser := parseErr == nil && needsBrowserFallback(content, httpResult.body)
+		content, parseErr := f.extractContent(httpResult)
+		if parseErr != nil && f.markdown {
+			return "", parseErr
+		}
+		requiresBrowser := parseErr == nil && (!f.markdown || isHTMLContent(httpResult.contentType)) &&
+			needsBrowserFallback(content, httpResult.body)
 		if parseErr == nil && strings.TrimSpace(content) != "" && !requiresBrowser {
 			logger.Infof(ctx, "[WebFetch] fetched %s → %d chars", rawURL, len(content))
 			return content, nil
 		}
 		if f.renderBrowser != nil {
 			browserURL := firstNonEmpty(httpResult.finalURL, rawURL)
-			if rendered, browserErr := f.fetchWithBrowser(requestCtx, browserURL); browserErr == nil {
-				content, browserParseErr := htmlToText(rendered)
+			rendered, browserErr := f.fetchWithBrowser(requestCtx, browserURL)
+			if err := timeoutFetchError(browserErr); err != nil {
+				return "", err
+			}
+			if browserErr == nil {
+				content, browserParseErr := f.extractContent(&httpFetchResult{
+					body: []byte(rendered), finalURL: browserURL, contentType: "text/html",
+				})
 				if browserParseErr == nil && strings.TrimSpace(content) != "" {
 					logger.Infof(ctx, "[WebFetch] rendered %s → %d chars", rawURL, len(content))
 					return content, nil
@@ -185,8 +234,14 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (string, error) {
 	}
 
 	if f.renderBrowser != nil && canRenderAfterHTTPError(httpErr) {
-		if rendered, browserErr := f.fetchWithBrowser(requestCtx, rawURL); browserErr == nil {
-			content, browserParseErr := htmlToText(rendered)
+		rendered, browserErr := f.fetchWithBrowser(requestCtx, rawURL)
+		if err := timeoutFetchError(browserErr); err != nil {
+			return "", err
+		}
+		if browserErr == nil {
+			content, browserParseErr := f.extractContent(&httpFetchResult{
+				body: []byte(rendered), finalURL: rawURL, contentType: "text/html",
+			})
 			if browserParseErr == nil && strings.TrimSpace(content) != "" {
 				logger.Infof(ctx, "[WebFetch] rendered %s → %d chars", rawURL, len(content))
 				return content, nil
@@ -207,18 +262,56 @@ func (f *Fetcher) fetchHTTP(ctx context.Context, rawURL string, parsedURL *url.U
 		return nil, classifyRequestError(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	success := resp.StatusCode == http.StatusOK
+	if f.markdown {
+		success = resp.StatusCode >= 200 && resp.StatusCode < 300
+	}
+	if !success {
 		return nil, classifyHTTPStatus(resp.StatusCode, resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, f.maxBodySize))
+	readLimit := f.maxBodySize
+	if f.markdown {
+		readLimit++
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, readLimit))
 	if err != nil {
 		return nil, newFetchError(ErrorRead, true, "read failed: %v", err)
+	}
+	if f.markdown && int64(len(body)) > f.maxBodySize {
+		return nil, newFetchError(ErrorBodyTooLarge, false, "page exceeds the %d byte download limit", f.maxBodySize)
+	}
+	rawContentType := resp.Header.Get("Content-Type")
+	contentType, _, _ := mime.ParseMediaType(rawContentType)
+	if contentType == "" {
+		contentType, _, _ = mime.ParseMediaType(http.DetectContentType(body))
+	}
+	if isHTMLContent(contentType) {
+		body = decodeHTMLBody(body, rawContentType)
 	}
 	finalURL := rawURL
 	if resp.Request != nil && resp.Request.URL != nil {
 		finalURL = resp.Request.URL.String()
 	}
-	return &httpFetchResult{body: body, finalURL: finalURL}, nil
+	return &httpFetchResult{body: body, finalURL: finalURL, contentType: contentType}, nil
+}
+
+// decodeHTMLBody converts an HTML body to UTF-8 when the page declares a
+// different charset through a BOM, the Content-Type header, or a <meta> tag.
+// Valid UTF-8 and undeclared bodies are returned unchanged: the HTML default
+// (windows-1252) would corrupt undeclared UTF-8 pages with an ASCII-only head.
+func decodeHTMLBody(body []byte, contentType string) []byte {
+	if utf8.Valid(body) {
+		return body
+	}
+	enc, name, certain := charset.DetermineEncoding(body, contentType)
+	if enc == encoding.Nop || (!certain && name == "windows-1252") {
+		return body
+	}
+	decoded, err := enc.NewDecoder().Bytes(body)
+	if err != nil {
+		return body
+	}
+	return decoded
 }
 
 func (f *Fetcher) pinnedDialContext() func(context.Context, string, string) (net.Conn, error) {
@@ -229,6 +322,11 @@ func (f *Fetcher) pinnedDialContext() func(context.Context, string, string) (net
 		}
 		if utils.IsSystemProxy(address) || utils.IsSSRFWhitelisted(host) {
 			return (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
+		}
+		// Whitelist-only mode refuses a non-whitelisted name before the
+		// lookup (#3378).
+		if err := utils.CheckDialWhitelistOnly(host); err != nil {
+			return nil, fmt.Errorf("connection blocked: %w", err)
 		}
 		ips, err := f.resolveIPs(ctx, host)
 		if err != nil {
@@ -242,11 +340,26 @@ func (f *Fetcher) pinnedDialContext() func(context.Context, string, string) (net
 				return nil, fmt.Errorf("connection blocked: %s resolves to restricted IP %s", host, ip)
 			}
 		}
-		pinnedAddress := net.JoinHostPort(ips[0].String(), port)
-		if f.dialContext != nil {
-			return f.dialContext(ctx, network, pinnedAddress)
+		// Try validated addresses without a second DNS lookup. A broken IPv6 route
+		// must not prevent reaching the same public host over IPv4.
+		var lastErr error
+		for _, ip := range ips {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			dial := f.dialContext
+			if dial == nil {
+				dial = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
+			}
+			conn, err := dial(dialCtx, network, net.JoinHostPort(ip.String(), port))
+			cancel()
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
 		}
-		return (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, pinnedAddress)
+		return nil, lastErr
 	}
 }
 
@@ -269,6 +382,11 @@ func (f *Fetcher) resolvePinnedTarget(ctx context.Context, rawURL string) (pinne
 		if parsedURL.Scheme == "http" {
 			port = "80"
 		}
+	}
+	// Whitelist-only mode refuses a host outside the whitelist before the
+	// lookup (#3378); a whitelisted one is still resolved to pin the render.
+	if err := utils.CheckSSRFWhitelistOnly(parsedURL.Hostname()); err != nil {
+		return pinnedTarget{}, newFetchError(ErrorSSRFRejected, false, "%w", err)
 	}
 	ips, err := f.resolveIPs(ctx, parsedURL.Hostname())
 	if err != nil {
@@ -305,7 +423,9 @@ func renderWithChromium(ctx context.Context, target pinnedTarget) (string, error
 	defer cancelAllocator()
 	browserCtx, cancelBrowser := chromedp.NewContext(allocatorCtx)
 	defer cancelBrowser()
-	browserCtx, cancelTimeout := context.WithTimeout(browserCtx, fetchTimeout)
+	// Child of the fetch context: a full PageFetchTimeout here cannot outlive
+	// the parent budget, so HTTP and chromedp share one deadline instead of stacking.
+	browserCtx, cancelTimeout := context.WithTimeout(browserCtx, PageFetchTimeout())
 	defer cancelTimeout()
 	var html string
 	if err := chromedp.Run(browserCtx,
@@ -315,14 +435,10 @@ func renderWithChromium(ctx context.Context, target pinnedTarget) (string, error
 	); err != nil {
 		return "", fmt.Errorf("chromium render failed: %w", err)
 	}
-	return string(limitBytes([]byte(html), maxBodySize)), nil
-}
-
-func limitBytes(value []byte, max int64) []byte {
-	if int64(len(value)) <= max {
-		return value
+	if len(html) > maxAgentBodySize {
+		return "", newFetchError(ErrorBodyTooLarge, false, "rendered page exceeds download limit")
 	}
-	return value[:max]
+	return html, nil
 }
 
 func needsBrowserFallback(content string, html []byte) bool {
@@ -390,6 +506,20 @@ func classifyValidationError(err error) error {
 		return newFetchError(ErrorDNS, true, "DNS lookup failed: %v", err)
 	}
 	return newFetchError(ErrorSSRFRejected, false, "URL rejected: %v", err)
+}
+
+func timeoutFetchError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return newFetchError(ErrorTimeout, true, "fetch timed out: %v", err)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return newFetchError(ErrorTimeout, true, "fetch timed out: %v", err)
+	}
+	return nil
 }
 
 func classifyRequestError(err error) error {
@@ -482,4 +612,27 @@ func stripTags(html string) string {
 		}
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func isHTMLContent(contentType string) bool {
+	return contentType == "text/html" || contentType == "application/xhtml+xml"
+}
+
+func (f *Fetcher) extractContent(result *httpFetchResult) (string, error) {
+	if !f.markdown {
+		return htmlToText(string(result.body))
+	}
+	if isHTMLContent(result.contentType) {
+		return htmlToMarkdown(string(result.body), result.finalURL)
+	}
+	if strings.HasPrefix(result.contentType, "text/") ||
+		result.contentType == "application/json" || result.contentType == "application/xml" ||
+		strings.HasSuffix(result.contentType, "+json") || strings.HasSuffix(result.contentType, "+xml") {
+		if !utf8.Valid(result.body) || strings.ContainsRune(string(result.body), 0) {
+			return "", newFetchError(ErrorUnsupportedContent, false, "page is not UTF-8 text")
+		}
+		return strings.TrimSpace(string(result.body)), nil
+	}
+	return "", newFetchError(ErrorUnsupportedContent, false,
+		"unsupported page content type: %s; use an appropriate document reader", result.contentType)
 }

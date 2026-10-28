@@ -14,7 +14,23 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+var (
+	// ErrSharedSandbox is returned when the session lives on its owner's shared
+	// machine, so destroying its sandbox would destroy every sibling session's
+	// workspace. Delete the session workspace instead.
+	ErrSharedSandbox = errors.New("sandbox: session shares its owner's machine")
+	// ErrSessionWorkspaceBusy is returned when the session's workspace is held
+	// exclusively, or has operations that an exclusive request must not cut off.
+	ErrSessionWorkspaceBusy = errors.New("sandbox: session workspace is busy")
+	// ErrUserAllocationRejected is returned when a stored user-mode assignment's
+	// owner identity is not, or is no longer, eligible to share a machine.
+	ErrUserAllocationRejected = errors.New("sandbox: user-mode allocation rejected for this owner")
 )
 
 // SessionShellExecutor executes ad-hoc shell commands inside a session-
@@ -60,10 +76,9 @@ type SessionFileStore interface {
 	// session's remote sandbox, provisioning the sandbox on first call.
 	WriteSessionInputFile(ctx context.Context, sessionID, filePath string, content []byte) error
 
-	// WriteSessionWorkspaceFile writes a model-authored file under
-	// /workspace. /workspace/input stays read-only (attachments); everything
-	// else under /workspace is accepted so generated scripts do not have to
-	// travel through shell_exec heredocs.
+	// WriteSessionWorkspaceFile writes a model-authored file inside the
+	// current session sandbox. Relative paths resolve from /workspace;
+	// /workspace/input stays read-only (attachments).
 	WriteSessionWorkspaceFile(ctx context.Context, sessionID, filePath string, content []byte) error
 
 	// WriteSessionWorkspaceFiles writes many workspace files after preparing
@@ -91,10 +106,17 @@ type SessionCapabilityProvider interface {
 	SessionFileStore() SessionFileStore
 }
 
-// SessionInstallShellExecutor runs install/maintenance shell commands, which
-// need root and the skills image root. It is a separate interface from
-// SessionShellExecutor so the privilege is something a caller must ask for by
-// name: ordinary chat sessions keep the non-root, /workspace-only contract.
+// SessionWorkspaceLayoutProvider is implemented by managers that can describe
+// their session workspace. Tools resolve it once per Execute from the
+// session sandbox, not from a tool-instance field.
+type SessionWorkspaceLayoutProvider interface {
+	SessionWorkspaceLayout(ctx context.Context, sessionID string) (WorkspaceLayout, error)
+}
+
+// SessionInstallShellExecutor runs install/maintenance shell commands with
+// their own bootstrap and working-directory scope. Ordinary shell execution
+// stays inside its session sandbox: anywhere in a remote container, and the
+// layout's writable roots on a host workspace.
 type SessionInstallShellExecutor interface {
 	ExecShellCommandWithOptions(
 		ctx context.Context,
@@ -125,11 +147,74 @@ type SessionInstallCapabilityProvider interface {
 	SessionInstallShellExecutor() SessionInstallShellExecutor
 }
 
-// SessionTurnHolder marks the start and end of one chat turn on a session's
-// sandbox. While the turn is open, a stale image mark waits: the first
-// resolve of the turn may rebuild, later resolves of the same turn keep the
-// sandbox so /workspace scratch and in-flight execs survive an admin install.
+// SessionTerminalManager opens interactive PTYs on the sandbox bound to a
+// session. Like the file store it is provider-neutral: the WebSocket
+// handler bridges browser terminal frames to it without knowing whether
+// E2B or Cube serves the session.
+type SessionTerminalManager interface {
+	// OpenSessionTerminal connects to the session's currently bound sandbox
+	// and opens a PTY. It is lookup-only: when no live sandbox is bound it
+	// returns ErrNoLiveSessionSandbox instead of provisioning one, because
+	// the terminal entry point lacks the agent's config-pin context and
+	// must not create microVMs as a side effect. A bound sandbox that is
+	// not confirmed running returns ErrSandboxPaused unless opts.AllowResume
+	// is set, so a panel open cannot silently resume (and re-bill) a paused
+	// instance. A backend that cannot stream PTYs returns
+	// ErrTerminalUnsupported, not "no sandbox".
+	OpenSessionTerminal(ctx context.Context, sessionID string, opts RemoteTerminalOptions) (RemoteTerminalSession, error)
+}
+
+// SessionTerminalProvider is implemented by managers that MAY offer
+// interactive terminals. The accessor returns nil when the current runtime
+// cannot honour the capability.
+type SessionTerminalProvider interface {
+	SessionTerminalManager() SessionTerminalManager
+}
+
+// SessionDesktopConn is one dialled desktop leg.
+//
+// SandboxID is the sandbox this connection actually reached. It is returned
+// rather than looked up afterwards because a skill install landing between
+// the dial and the lookup would report the new sandbox for a connection held
+// on the old one, and the handler's rebuild check would silently miss.
+type SessionDesktopConn struct {
+	Conn      *websocket.Conn
+	SandboxID string
+
+	// StartTTLRefresh extends the provider idle timeout for as long as ctx
+	// is live. The WebSocket handler must pass the relay ctx (WithoutCancel),
+	// not the HTTP request ctx used to dial. Nil when the backend has no
+	// timeout to refresh (Docker).
+	StartTTLRefresh func(ctx context.Context)
+}
+
+// SessionDesktopManager relays a WebSocket to the graphical desktop of the
+// sandbox bound to a session. Like the terminal it is provider-neutral: the
+// WebSocket handler bridges browser RFB frames to it without knowing whether
+// E2B or Cube serves the session.
+type SessionDesktopManager interface {
+	// OpenSessionDesktop dials the desktop port of the session's currently
+	// bound sandbox. It is lookup-only by design: the caller (the desktop
+	// service) has already provisioned and started the desktop through the
+	// normal execution path, so a missing binding here means the sandbox
+	// disappeared between the two steps, not "please create one".
+	// ErrNoLiveSessionSandbox says exactly that; a backend that cannot relay
+	// desktops returns ErrDesktopUnsupported.
+	OpenSessionDesktop(ctx context.Context, sessionID string, opts RemoteDesktopOptions) (*SessionDesktopConn, error)
+}
+
+// SessionDesktopProvider is implemented by managers that MAY offer a
+// graphical desktop. The accessor returns nil when the current runtime cannot
+// honour the capability.
+type SessionDesktopProvider interface {
+	SessionDesktopManager() SessionDesktopManager
+}
+
+// SessionTurnHolder marks one chat turn on a session's sandbox.
 type SessionTurnHolder interface {
-	BeginSessionTurn(ctx context.Context, sessionID string) error
-	EndSessionTurn(ctx context.Context, sessionID string) error
+	// BeginSessionTurn opens one turn hold. Run the turn with the returned
+	// context: on a shared machine it carries this hold's admission member,
+	// so the turn's own tool calls do not wait for it, and it ends if the
+	// registration is lost. end closes exactly this hold; call it once.
+	BeginSessionTurn(ctx context.Context, sessionID string) (turnCtx context.Context, end func(), err error)
 }

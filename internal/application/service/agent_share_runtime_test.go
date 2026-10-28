@@ -43,8 +43,6 @@ func (r *sharedAgentWebSearchRepo) Update(context.Context, *types.WebSearchProvi
 
 func (r *sharedAgentWebSearchRepo) Delete(context.Context, uint64, string) error { return nil }
 
-func (r *sharedAgentWebSearchRepo) ClearDefault(context.Context, uint64, string) error { return nil }
-
 func TestSharedAgentWebSearchReadyUsesSourceWorkspace(t *testing.T) {
 	repo := &sharedAgentWebSearchRepo{
 		explicit: &types.WebSearchProviderEntity{ID: "source-provider", TenantID: 42},
@@ -72,7 +70,7 @@ func TestSharedAgentWebSearchReadyUsesSourceDefault(t *testing.T) {
 }
 
 func TestFilterSharedAgentWriteTools(t *testing.T) {
-	got := filterSharedAgentWriteTools([]string{
+	got := withoutWikiWriteTools([]string{
 		tools.ToolWikiReadPage,
 		tools.ToolWikiFlagIssue,
 		tools.ToolWikiWritePage,
@@ -93,17 +91,17 @@ func TestFilterSharedAgentWriteTools(t *testing.T) {
 
 func TestFilterSharedAgentWriteToolsCoversAllWikiMutations(t *testing.T) {
 	readOnlyWikiTools := map[string]bool{
-		tools.ToolWikiReadPage:      true,
-		tools.ToolWikiSearch:        true,
-		tools.ToolWikiReadSourceDoc: true,
-		tools.ToolWikiReadIssue:     true,
+		tools.ToolWikiReadPage:  true,
+		tools.ToolWikiSearch:    true,
+		tools.ToolReadDocument:  true,
+		tools.ToolWikiReadIssue: true,
 	}
 
 	for _, definition := range tools.AvailableToolDefinitions() {
 		if !strings.HasPrefix(definition.Name, "wiki_") {
 			continue
 		}
-		filtered := filterSharedAgentWriteTools([]string{definition.Name})
+		filtered := withoutWikiWriteTools([]string{definition.Name})
 		if readOnlyWikiTools[definition.Name] {
 			require.Equal(t, []string{definition.Name}, filtered, "read-only wiki tool %q should remain available", definition.Name)
 			continue
@@ -151,4 +149,8 @@ func TestSharedAgentInfoLeavesCustomAgentName(t *testing.T) {
 	}, types.OrgRoleViewer, map[string]bool{})
 	require.Equal(t, "Mine", info.Agent.Name)
 	require.Equal(t, "keep me", info.Agent.Description)
+}
+
+func (*sharedAgentWebSearchRepo) PatchSettings(context.Context, *types.WebSearchProviderEntity, []string) error {
+	panic("unexpected PatchSettings call")
 }

@@ -25,12 +25,19 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	// principal in the same workspace, so all of this has to survive; a
 	// detached goroutine that loses its tenant reads another tenant's rows or
 	// none at all.
-	TenantIDContextKey:    true,
-	TenantInfoContextKey:  true,
-	UserContextKey:        true,
-	UserIDContextKey:      true,
-	PrincipalContextKey:   true,
-	SystemAdminContextKey: true,
+	TenantIDContextKey:         true,
+	CallerContextKey:           true,
+	KBGrantsContextKey:         true,
+	KBTransferContextKey:       true,
+	SharedAgentGrantContextKey: true,
+	TenantInfoContextKey:       true,
+	UserContextKey:             true,
+	UserIDContextKey:           true,
+	PrincipalContextKey:        true,
+	// How the principal was authenticated. Background work that creates a
+	// session (SSE clone) must stamp the same source the request had.
+	PrincipalAuthSourceContextKey: true,
+	SystemAdminContextKey:         true,
 	// TenantRoleContextKey: the caller's resolved role in the active tenant
 	// (PR 2 #1303). Must survive for the same reason as TenantIDContextKey —
 	// any handler that does `ctx := logger.CloneContext(c.Request.Context())`
@@ -40,6 +47,9 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	// Per-API-key operation and KB scopes: a restriction, so dropping it would
 	// hand background work broader reach than the key it came from.
 	TenantAPIKeyScopeContextKey: true,
+	// Display identity for which API key initiated work. Not a grant; dropping
+	// it would only lose activity attribution on detached goroutines.
+	AuditAPIKeyContextKey: true,
 
 	// Session scope. SessionTenantID re-scopes session/message lookups, while
 	// SandboxTenantID keys the session→sandbox binding to the session owner
@@ -50,6 +60,10 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	SessionIDContextKey:       true,
 	SessionTenantIDContextKey: true,
 	SandboxTenantIDContextKey: true,
+	// The request's own admission members. Not a grant: it only exempts
+	// members this turn holds itself, by unique token, from a rebuild check.
+	// Dropping it would make detached QA work wait on its own turn.
+	SandboxAdmissionExemptContextKey: true,
 
 	// Embed callers: the anonymous visitor id isolates embed OAuth, so losing
 	// it would merge visitors together.
@@ -86,6 +100,15 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	// of emitting its one-shot notice, so the failure is a stalled reply.
 	// A detached context has no live client either, which is what this says.
 	MCPOAuthNonInteractiveContextKey: true,
+	// Whether anyone can answer the run's prompts. Dropping it reads as
+	// unattended, which refuses an approval an attended run could have asked.
+	RunModeContextKey: true,
+	// The run's access level. Dropping it reads as auto_write, which would
+	// let a lower-level run's MCP writes through without asking.
+	AccessLevelContextKey: true,
+	// Where the run's grants live. Dropping it only asks again.
+	GrantScopeContextKey:         true,
+	StandingGrantScopeContextKey: true,
 
 	// ---- Deliberately does not survive a detach ----
 	//
@@ -103,6 +126,11 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	// ingest pipeline, which is what detached work should look like; an
 	// inherited "user" would attribute a background rewrite to a person.
 	WikiEditSourceContextKey: false,
+	// One write's licence to remove table rows the stored page still has. A
+	// grant, and a detach must not widen it: the marker is put on the context
+	// immediately around a single write by a caller that knows the removal is
+	// deliberate, so it means nothing on any other context.
+	WikiShrinkAllowedContextKey: false,
 	// The parser engine resolved from one agent's ChatParserEngineRules for
 	// one attachment's file type. Read by the attachment processor on the same
 	// context that set it, and meaningless for anything else.
@@ -111,6 +139,9 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	// request context inside the embed handler that authenticated it; nothing
 	// downstream of a detach reads it.
 	EmbedChannelContextKey: false,
+	// The authenticated MCP endpoint. Read only by the MCP tool handlers on
+	// the request context that authenticated it.
+	MCPEndpointContextKey: false,
 }
 
 // ContextKeysClonedAcrossDetach returns the keys logger.CloneContext carries

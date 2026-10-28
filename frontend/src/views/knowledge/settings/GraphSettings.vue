@@ -3,29 +3,39 @@
     <div v-if="!embedded" class="section-header">
       <h2>{{ t('graphSettings.title') }}</h2>
       <p class="section-description">{{ t('graphSettings.description') }}</p>
-
-      <t-alert
-        v-if="!isGraphDatabaseEnabled"
-        theme="warning"
-        style="margin-top: 16px;"
-      >
-        <template #message>
-          <div>{{ t('graphSettings.disabledWarning') }}</div>
-          <t-link class="graph-guide-link" theme="primary" @click="handleOpenGraphGuide">
-            {{ t('graphSettings.howToEnable') }}
-          </t-link>
-        </template>
-      </t-alert>
     </div>
-    <t-alert
-      v-else-if="!isGraphDatabaseEnabled"
-      theme="warning"
-      class="embedded-graph-alert"
+    <div
+      v-if="graphAvailability !== 'enabled'"
+      class="graph-disabled"
+      :class="{ 'graph-disabled--loading': graphAvailability === 'loading' }"
+      :role="graphAvailability === 'loading' ? 'status' : 'alert'"
     >
-      <template #message>
-        <div>{{ t('graphSettings.disabledWarning') }}</div>
-      </template>
-    </t-alert>
+      <span class="graph-disabled-icon">
+        <t-icon :name="graphAvailability === 'loading' ? 'info-circle' : 'chart-bubble'" />
+      </span>
+      <div class="graph-disabled-text">
+        <p>{{ graphAvailabilityMessage }}</p>
+      </div>
+      <t-button
+        v-if="graphAvailability === 'error'"
+        size="small"
+        theme="primary"
+        variant="outline"
+        @click="loadSystemInfo(true)"
+      >
+        {{ t('common.retry') }}
+      </t-button>
+      <t-button
+        v-if="graphAvailability === 'disabled' && !embedded"
+        size="small"
+        theme="primary"
+        variant="outline"
+        @click="handleOpenGraphGuide"
+      >
+        <template #icon><t-icon name="help-circle" /></template>
+        {{ t('graphSettings.howToEnable') }}
+      </t-button>
+    </div>
 
     <div v-if="isGraphDatabaseEnabled" class="settings-group">
       <!-- 启用实体关系提取 -->
@@ -326,6 +336,7 @@ import { useI18n } from 'vue-i18n'
 import { extractTextRelations, fabriText, fabriTag, type Node, type Relation } from '@/api/initialization'
 import { useEditorResourcesStore } from '@/stores/editorResources'
 import { useAuthStore } from '@/stores/auth'
+import { docsUrl } from '@/utils/docsUrl'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
@@ -378,12 +389,12 @@ const tagFabring = ref(false)
 const textFabring = ref(false)
 const extracting = ref(false)
 
-// 系统信息
-const systemInfo = ref<any>(null)
-
-// 计算图数据库是否启用
-const isGraphDatabaseEnabled = computed(() => {
-  return systemInfo.value?.graph_database_engine && systemInfo.value.graph_database_engine !== 'Not Enabled'
+const graphAvailability = ref<'loading' | 'enabled' | 'disabled' | 'error'>('loading')
+const isGraphDatabaseEnabled = computed(() => graphAvailability.value === 'enabled')
+const graphAvailabilityMessage = computed(() => {
+  if (graphAvailability.value === 'loading') return t('graphSettings.checkingAvailability')
+  if (graphAvailability.value === 'error') return t('graphSettings.checkAvailabilityFailed')
+  return t('graphSettings.disabledWarning')
 })
 
 // Watch for prop changes
@@ -576,19 +587,25 @@ const clearExtractExample = () => {
 
 const editorResources = useEditorResourcesStore()
 
-// 加载系统信息
+let systemInfoRequest = 0
 const loadSystemInfo = async (force = false) => {
+  const request = ++systemInfoRequest
+  graphAvailability.value = 'loading'
   try {
     await editorResources.ensureSystemInfo(force)
-    systemInfo.value = editorResources.systemInfo
+    if (request !== systemInfoRequest) return
+    const engine = editorResources.systemInfo?.graph_database_engine
+    const name = typeof engine === 'string' ? engine.trim() : ''
+    graphAvailability.value = !name ? 'error' : name === 'Not Enabled' ? 'disabled' : 'enabled'
   } catch (error: any) {
+    if (request !== systemInfoRequest) return
+    graphAvailability.value = 'error'
     console.error('Failed to load system info:', error)
   }
 }
 
 const graphGuideUrl =
-  import.meta.env.VITE_KG_GUIDE_URL ||
-  'https://github.com/Tencent/WeKnora/blob/main/docs/KnowledgeGraph.md'
+  import.meta.env.VITE_KG_GUIDE_URL || docsUrl('knowledgeGraph')
 
 // Open guide documentation to show how to enable graph database
 const handleOpenGraphGuide = () => {
@@ -610,18 +627,58 @@ onMounted(async () => {
   margin-bottom: 20px;
 
   h2 {
-    font-size: 20px;
+    font-size: var(--app-text-3xl);
     font-weight: 600;
     color: var(--td-text-color-primary);
     margin: 0 0 6px 0;
   }
 
   .section-description {
-    font-size: 14px;
+    font-size: var(--app-text-base);
     color: var(--td-text-color-secondary);
     margin: 0;
     line-height: 1.5;
   }
+}
+
+.graph-disabled {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--td-component-stroke);
+  border-radius: var(--app-radius-md);
+  background: var(--td-bg-color-secondarycontainer);
+}
+
+.graph-disabled-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--app-radius-md);
+  font-size: var(--app-text-2xl);
+  color: var(--td-warning-color);
+  background: var(--td-warning-color-light);
+}
+
+.graph-disabled-text {
+  flex: 1;
+  min-width: 0;
+
+  p {
+    margin: 0;
+    font-size: var(--app-text-md);
+    line-height: 1.5;
+    color: var(--td-text-color-secondary);
+  }
+}
+
+.graph-disabled--loading .graph-disabled-icon {
+  color: var(--td-brand-color);
+  background: var(--td-brand-color-light);
 }
 
 .settings-group {
@@ -658,7 +715,7 @@ onMounted(async () => {
   padding-right: 24px;
 
   label {
-    font-size: 15px;
+    font-size: var(--app-text-lg);
     font-weight: 500;
     color: var(--td-text-color-primary);
     display: block;
@@ -666,7 +723,7 @@ onMounted(async () => {
   }
 
   .desc {
-    font-size: 13px;
+    font-size: var(--app-text-md);
     color: var(--td-text-color-secondary);
     margin: 0;
     line-height: 1.5;
@@ -705,7 +762,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--app-text-md);
   color: var(--td-text-color-secondary);
 
   .tip-icon {
@@ -723,7 +780,7 @@ onMounted(async () => {
 .node-item {
   background: var(--td-bg-color-container);
   border: 1px solid var(--td-component-stroke);
-  border-radius: 8px;
+  border-radius: var(--app-radius-md);
   padding: 16px;
 }
 
@@ -734,7 +791,7 @@ onMounted(async () => {
   margin-bottom: 12px;
 
   .node-icon {
-    font-size: 20px;
+    font-size: var(--app-text-3xl);
     color: var(--td-brand-color);
   }
 
@@ -778,7 +835,7 @@ onMounted(async () => {
   padding: 12px;
   background: var(--td-bg-color-container);
   border: 1px solid var(--td-component-stroke);
-  border-radius: 8px;
+  border-radius: var(--app-radius-md);
 
   .relation-select {
     flex: 1;
@@ -787,7 +844,7 @@ onMounted(async () => {
 
   .relation-arrow {
     color: var(--td-text-color-secondary);
-    font-size: 16px;
+    font-size: var(--app-text-xl);
   }
 }
 
@@ -798,7 +855,7 @@ onMounted(async () => {
 }
 
 .graph-settings--embedded {
-  .embedded-graph-alert {
+  .graph-disabled {
     margin-bottom: 12px;
   }
 

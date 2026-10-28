@@ -3,6 +3,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 
 const dialog = readFileSync(new URL('./UploadConfirmDialog.vue', import.meta.url), 'utf8')
+const editor = readFileSync(new URL('../KnowledgeBaseEditorModal.vue', import.meta.url), 'utf8')
 const host = readFileSync(new URL('../../../components/UploadConfirmHost.vue', import.meta.url), 'utf8')
 const knowledgeBase = readFileSync(new URL('../KnowledgeBase.vue', import.meta.url), 'utf8')
 const platform = readFileSync(new URL('../../platform/index.vue', import.meta.url), 'utf8')
@@ -17,7 +18,7 @@ test('selects multiple document tags and returns them with the confirmation resu
 
 test('uses confirmed tags for file and URL imports instead of reading the list filter at upload time', () => {
   assert.match(knowledgeBase, /const tagIds = result\.tagIds \|\| \[\]/)
-  assert.match(knowledgeBase, /executeUploadBatch\(files, \{[\s\S]*?\btagIds,[\s\S]*?\}\)/)
+  assert.match(knowledgeBase, /enqueueUploads\(files, \{[\s\S]*?\btagIds,[\s\S]*?\}\)/)
   assert.match(knowledgeBase, /executeUrlImport\(url, processConfig, tagIds\)/)
   assert.doesNotMatch(
     knowledgeBase,
@@ -77,4 +78,11 @@ test('uses section navigation with inline chunking controls and advanced options
   assert.match(dialog, /statusFull/)
   assert.match(dialog, /data-section="multimodal"/)
   assert.doesNotMatch(dialog, /<KBChunkingSettings/)
+})
+
+test('preserves an explicit zero chunk overlap when loading saved settings', () => {
+  assert.match(dialog, /chunkOverlap: kb\.chunking_config\?\.chunk_overlap \?\? 80/)
+  assert.match(editor, /chunkOverlap: kb\.chunking_config\?\.chunk_overlap \?\? 80/)
+  assert.doesNotMatch(dialog, /chunk_overlap \|\| 80/)
+  assert.doesNotMatch(editor, /chunk_overlap \|\| 80/)
 })
