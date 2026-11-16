@@ -475,6 +475,9 @@ func withIMIdentity(ctx context.Context, channel *IMChannel, msg *IncomingMessag
 		principalID := fmt.Sprintf("%d:%s:%s:%s", tenantID, channel.ID, msg.Platform, msg.UserID)
 		ctx = types.WithPrincipal(ctx, types.Principal{Type: types.PrincipalIMUser, ID: principalID})
 		ctx = types.WithPrincipalAuthSource(ctx, types.AuthSourceIM)
+		// Which message this run answers: an MCP service that asked for the
+		// sender is told it too (internal/mcp/im_sender.go).
+		ctx = types.WithIMMessageID(ctx, msg.MessageID)
 	}
 	ctx = context.WithValue(ctx, types.TenantRoleContextKey, types.TenantRoleViewer)
 	// IM bots have no live client that can complete an in-conversation MCP OAuth

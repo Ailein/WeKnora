@@ -95,6 +95,25 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	return Principal{}, false
 }
 
+// WithIMMessageID records which incoming IM message a run is answering.
+func WithIMMessageID(ctx context.Context, messageID string) context.Context {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, IMMessageIDContextKey, messageID)
+}
+
+// IMMessageIDFromContext returns the id of the incoming IM message the run is
+// answering, or "" when the run did not start from one.
+func IMMessageIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(IMMessageIDContextKey).(string)
+	return id
+}
+
 func WithEmbedVisitorID(ctx context.Context, visitorID string) context.Context {
 	visitorID = strings.TrimSpace(visitorID)
 	if visitorID == "" {

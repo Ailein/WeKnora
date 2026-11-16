@@ -109,6 +109,10 @@ var contextCloneAcrossDetach = map[ContextKey]bool{
 	// Where the run's grants live. Dropping it only asks again.
 	GrantScopeContextKey:         true,
 	StandingGrantScopeContextKey: true,
+	// Which incoming IM message the run answers. Not a grant: work detached
+	// while answering a message is still part of answering it, and an MCP
+	// server that goes by the message id would refuse a call that lost it.
+	IMMessageIDContextKey: true,
 
 	// ---- Deliberately does not survive a detach ----
 	//

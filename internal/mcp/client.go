@@ -249,6 +249,9 @@ func NewMCPClient(config *ClientConfig) (MCPClient, error) {
 			transport.WithEndpointTimeout(timeout),
 			transport.WithResponseTimeout(timeout),
 		}
+		if wantsIMSender(headers) {
+			options = append(options, transport.WithHeaderFunc(imSenderHeaders))
+		}
 		if useOAuth {
 			options = append(options, transport.WithOAuth(oauthConfig))
 		}
@@ -264,6 +267,9 @@ func NewMCPClient(config *ClientConfig) (MCPClient, error) {
 		options := []transport.StreamableHTTPCOption{
 			transport.WithHTTPBasicClient(httpClient),
 			transport.WithHTTPHeaders(headers),
+		}
+		if wantsIMSender(headers) {
+			options = append(options, transport.WithHTTPHeaderFunc(imSenderHeaders))
 		}
 		if useOAuth {
 			options = append(options, transport.WithHTTPOAuth(oauthConfig))

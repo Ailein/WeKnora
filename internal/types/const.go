@@ -123,6 +123,12 @@ const (
 	// ChatParserEngineContextKey carries the resolved parser engine
 	// from the agent's ChatParserEngineRules for chat attachment processing.
 	ChatParserEngineContextKey ContextKey = "ChatParserEngine"
+	// IMMessageIDContextKey carries the IM platform's id of the incoming
+	// message a run is answering (set by the IM service). An MCP service that
+	// asked to be told the IM sender is told it too (internal/mcp/im_sender.go),
+	// so the server can tell a call made while answering one message from a
+	// call made after the sender wrote again. See IMMessageIDFromContext.
+	IMMessageIDContextKey ContextKey = "IMMessageID"
 )
 
 // String returns the string representation of the context key
