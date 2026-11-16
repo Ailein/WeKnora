@@ -133,7 +133,7 @@ func (a *Adapter) BotOpenID(ctx context.Context) (string, error) {
 			OpenID string `json:"open_id"`
 		} `json:"bot"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := im.DecodeIMResponse(resp.Body, &result); err != nil {
 		return "", fmt.Errorf("decode bot info: %w", err)
 	}
 	if result.Code != 0 {
@@ -766,7 +766,7 @@ func (a *Adapter) postFeishuMessage(ctx context.Context, accessToken, url string
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := im.DecodeIMResponse(resp.Body, &result); err != nil {
 		return 0, "", fmt.Errorf("decode response: %w", err)
 	}
 	return result.Code, result.Msg, nil
@@ -1101,7 +1101,7 @@ func (a *Adapter) cardkitCreate(ctx context.Context, accessToken, cardJSON strin
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := im.ReadIMResponse(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
@@ -1183,7 +1183,7 @@ func (a *Adapter) cardkitUpdateElement(ctx context.Context, accessToken, cardID,
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := im.DecodeIMResponse(resp.Body, &result); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 	if result.Code != 0 {
@@ -1374,7 +1374,7 @@ func (a *Adapter) uploadImageFromURL(ctx context.Context, accessToken, rawURL st
 			ImageKey string `json:"image_key"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := im.DecodeIMResponse(resp.Body, &result); err != nil {
 		return "", fmt.Errorf("decode upload response: %w", err)
 	}
 	if result.Code != 0 {
@@ -1421,7 +1421,7 @@ func (a *Adapter) cardkitSetStreaming(
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := im.DecodeIMResponse(resp.Body, &result); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 	if result.Code != 0 {
@@ -1465,7 +1465,7 @@ func (a *Adapter) getTenantAccessToken(ctx context.Context) (string, error) {
 		TenantAccessToken string `json:"tenant_access_token"`
 		Expire            int    `json:"expire"` // seconds
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := im.DecodeIMResponse(resp.Body, &result); err != nil {
 		return "", fmt.Errorf("decode response: %w", err)
 	}
 	if result.Code != 0 {
@@ -1502,8 +1502,13 @@ func (a *Adapter) decrypt(encrypted string) ([]byte, error) {
 		return nil, fmt.Errorf("new cipher: %w", err)
 	}
 
-	if len(ciphertext) < aes.BlockSize {
-		return nil, fmt.Errorf("ciphertext too short")
+	// CBC decrypts block by block and panics on a partial block, so the length
+	// must be checked here: this runs on the webhook body before the
+	// verification token is compared.
+	if len(ciphertext) < aes.BlockSize || len(ciphertext)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf(
+			"ciphertext length %d is not a positive multiple of the %d-byte AES block", len(ciphertext), aes.BlockSize,
+		)
 	}
 
 	iv := ciphertext[:aes.BlockSize]

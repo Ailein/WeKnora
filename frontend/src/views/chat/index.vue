@@ -396,6 +396,8 @@ const router = useRouter();
 const session_id = ref(props.session_id || route.params.chatid);
 watch(session_id, () => childTabs.reset(), { flush: 'sync' });
 const currentSession = ref(null);
+// A session ID can be revisited while requests from its previous visit are still pending.
+let chatLoadVersion = 0;
 const isAutomationSession = computed(() => currentSession.value?.kind === 'automation');
 const backgroundItems = ref([]);
 const viewingWorkId = ref('');
@@ -581,27 +583,33 @@ const sendManualImReply = async (value, imageFiles = [], attachmentFiles = []) =
     }
 };
 
+// 接管状态跟随会话详情：路由切换时 currentSession 先被置空（清掉旧按钮，
+// 加载失败也不残留），详情到位后再拉——isManualImSession 依赖 currentSession。
+// 挂在 watcher 上而不是写进 loadSessionAndHydrate / 路由 watcher：上游的
+// sessionLoad.test 按源码求值这些函数，里面不能出现 fork 的标识符。
+watch(
+    () => [currentSession.value?.id || '', currentSession.value?.im_platform || ''],
+    ([sid]) => { loadImHandling(sid ? session_id.value : ''); },
+);
+
 // 拉 session 详情，并按其 last_request_state 把输入栏状态恢复到当时的发起态。
 // 嵌入式（embeddedMode）由宿主页面注入 agent/KB，所以跳过整套恢复逻辑，
 // 避免污染宿主的 settings store。
 const loadSessionAndHydrate = async (sid) => {
     if (!sid || props.embeddedMode) return;
-    // 先清掉上一个会话的接管状态，避免加载失败时残留旧按钮。
-    imHandlingMode.value = '';
-    imHandlingExpiresAt.value = null;
     // Capture before awaiting: onMounted sends and clears firstQuery while this
     // request is in flight. A new session must retain the createChat draft.
     const preserveDraft = Boolean(firstQuery.value);
+    const version = chatLoadVersion;
     try {
         const sessionRes = await getSession(sid);
-        if (sessionRes?.data && sid === session_id.value) {
+        if (sessionRes?.data && version === chatLoadVersion && sid === session_id.value) {
             currentSession.value = sessionRes.data;
-            // isManualImSession 依赖 currentSession，需在赋值后再拉接管状态。
-            loadImHandling(sid);
             const lastState = sessionRes.data.last_request_state;
             useSettingsStoreInstance.hydrateSessionInputState(lastState, preserveDraft);
         }
     } catch (error) {
+        if (version !== chatLoadVersion || sid !== session_id.value) return;
         console.error('Failed to load session data:', error);
     }
 };
@@ -1128,6 +1136,8 @@ watch([() => route.params], async (newvalue) => {
         steerQueue.value = [];
         session_id.value = newvalue[0].chatid;
         currentSession.value = null;
+        const version = ++chatLoadVersion;
+        const sid = session_id.value;
         clearCitationChunkCache();
 
         // 切换会话时，重置状态
@@ -1144,9 +1154,10 @@ watch([() => route.params], async (newvalue) => {
         // 并应用自己的 last_request_state（在 loadSessionAndHydrate 内部完成）。
         useSettingsStoreInstance.restoreDefaultsIfSnapshotted();
 
-        await loadSessionAndHydrate(session_id.value);
+        await loadSessionAndHydrate(sid);
+        if (version !== chatLoadVersion) return;
         let data = {
-            session_id: session_id.value,
+            session_id: sid,
             created_at: '',
             limit: limit.value
         }
@@ -1204,9 +1215,12 @@ const fetchMessageList = (data) => getMessageList(data);
 // its carried-over queue is readable, and treating that gap as "queue is
 // empty" would wipe messages the user can still see.
 const hydrateSteerQueue = async ({ onlyWhenLive = false } = {}) => {
-    if (!session_id.value) return;
+    const sid = session_id.value;
+    const version = chatLoadVersion;
+    if (!sid) return;
     try {
-        const res = await listSteerSession(session_id.value);
+        const res = await listSteerSession(sid);
+        if (version !== chatLoadVersion || sid !== session_id.value) return;
         if (onlyWhenLive && !res?.assistant_message_id) return;
         const items = Array.isArray(res?.items) ? res.items : [];
         steerQueue.value = items.map((item) => ({
@@ -1220,6 +1234,7 @@ const hydrateSteerQueue = async ({ onlyWhenLive = false } = {}) => {
             if (item.delivery === 'inject') previewSteerMessage(messagesList, item);
         }
     } catch (e) {
+        if (version !== chatLoadVersion || sid !== session_id.value) return;
         console.warn('[Steer] Failed to restore queue:', e);
     }
 };
@@ -1252,6 +1267,7 @@ const {
     scrollContainer,
     debug: import.meta.env.DEV,
     onAfterMsgList: async () => {
+        const version = chatLoadVersion;
         activitySessionId.value = String(session_id.value);
         for (const message of messagesList) {
             if (message.role === 'assistant' && message.is_completed && message.suggestionSet === undefined) {
@@ -1261,6 +1277,7 @@ const {
         if (!steerQueue.value.length) {
             await hydrateSteerQueue();
         }
+        if (version !== chatLoadVersion) return;
         // Resume the trailing *assistant*, not simply the last row: a turn
         // that absorbed a mid-run message ends with the injected user bubble
         // in some orderings, and keying off that row would skip the resume
@@ -1299,7 +1316,7 @@ const {
             });
             // On success the stream resumed normally; on failure the error watcher
             // already took over (quiet recovery for IM), so only clear the flag here.
-            if (!error.value) isAttachingImStream.value = false;
+            if (version === chatLoadVersion && !error.value) isAttachingImStream.value = false;
         }
     },
     onAgentQuery: (data, existingMessage) => {
@@ -1337,12 +1354,16 @@ const showGlobalTypingIndicator = computed(() =>
 );
 
 const getmsgList = (data, isScrollType = false, scrollHeight) => {
+    const sid = String(data?.session_id || session_id.value || '');
+    const version = chatLoadVersion;
+    const isCurrent = () => version === chatLoadVersion && sid === String(session_id.value || '');
+    if (!isCurrent()) return;
     if (isScrollType) {
         if (historyLoadingMore.value || !hasMoreHistory.value) return;
         historyLoadingMore.value = true;
     }
     return fetchMessageList(data).then(async (res) => {
-        if (data?.session_id && String(data.session_id) !== String(session_id.value || '')) {
+        if (!isCurrent()) {
             return
         }
         const batch = res?.data;
@@ -1374,6 +1395,7 @@ const getmsgList = (data, isScrollType = false, scrollHeight) => {
         created_at.value = nextCursor;
         await handleMsgList(batch, isScrollType, scrollHeight);
     }).catch((err) => {
+        if (!isCurrent()) return;
         console.error('Failed to load messages:', err);
         if (isScrollType) {
             hasMoreHistory.value = historyHasMoreAfterAttempt(hasMoreHistory.value, {
@@ -1381,6 +1403,7 @@ const getmsgList = (data, isScrollType = false, scrollHeight) => {
             });
         }
     }).finally(() => {
+        if (!isCurrent()) return;
         historyLoading.value = false;
         historyLoadingMore.value = false;
         if (!isScrollType && messagesList.length === 0) {
@@ -1697,16 +1720,18 @@ const attachSteerFollowUp = async (completedAssistantId) => {
 
 const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = [], attachmentFiles = [], options = {}) => {
     if (!props.embeddedMode && !currentSession.value) {
+        const version = chatLoadVersion;
         await loadSessionAndHydrate(session_id.value);
-        if (!currentSession.value) return;
+        if (version !== chatLoadVersion || !currentSession.value) return;
     }
     if (composerLocked.value) return
+    const reasoningEffort = props.embeddedMode ? undefined : (useSettingsStoreInstance.reasoningEffortOverride || undefined);
     // IM 人工回复：直接投递给对方并记入历史，不进入 QA 流式管道。
+    // 必须排在 reasoningEffort 之后：上游 sessionLoad.test 求值到该行为止。
     if (isManualImSession.value) {
         await sendManualImReply(value, imageFiles, attachmentFiles);
         return;
     }
-    const reasoningEffort = props.embeddedMode ? undefined : (useSettingsStoreInstance.reasoningEffortOverride || undefined);
     stopStream();
     prepareForNewOutgoingMessage();
     activitySessionId.value = String(session_id.value);
@@ -2052,6 +2077,8 @@ const handleSessionMutation = (event) => {
         };
     }
     if (detail.messagesCleared) {
+        chatLoadVersion++;
+        historyLoading.value = false;
         messagesList.splice(0);
         steerQueue.value = [];
         created_at.value = '';
@@ -2116,6 +2143,7 @@ onMounted(async () => {
     }
 })
 const clearData = () => {
+    chatLoadVersion++;
     if (!props.embeddedMode) sessionActivity.detach(activitySessionId.value);
     activitySessionId.value = '';
     stopStream();
@@ -2127,6 +2155,7 @@ const clearData = () => {
     isImRecovering.value = false;
 }
 onUnmounted(() => {
+    chatLoadVersion++;
     if (!props.embeddedMode) sessionActivity.detach(activitySessionId.value);
     activitySessionId.value = '';
     window.removeEventListener(SESSION_MUTATION_EVENT, handleSessionMutation);

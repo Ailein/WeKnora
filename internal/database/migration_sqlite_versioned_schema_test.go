@@ -47,7 +47,8 @@ var versionedSQLiteTables = []string{
 	"notifications",
 	"session_sandbox_assignments",
 	"sandbox_user_machines",
-	"im_quick_replies", // fork 000053
+	"credential_vault_items",
+	"im_quick_replies", // fork 000056
 }
 
 // versionedSQLiteColumns maps each existing table to the columns that the
@@ -74,12 +75,12 @@ var versionedSQLiteColumns = map[string][]string{
 	"session_sandbox_assignments": {"released_at", "cleanup_due_at"}, // 000047
 	"tenant_invitations":          {"token", "accepted_count"},       // 000054
 	"embed_channels":              {"allow_memory"},                  // 000060
-	"im_channels":                 {"locale", "handoff_config"},      // 000030, fork 000052
+	"im_channels":                 {"locale", "handoff_config"},      // 000030, fork 000055
 	"im_channel_sessions": {
-		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // fork 000051
-		"consecutive_failures", "handoff_notified_at", // fork 000052
-		"peer_name", "operator_unread_count", // fork 000053
-		"last_message_preview", "last_message_role", "last_message_at", // fork 000053
+		"handling_mode", "handling_expires_at", "handling_timeout_minutes", // fork 000054
+		"consecutive_failures", "handoff_notified_at", // fork 000055
+		"peer_name", "operator_unread_count", // fork 000056
+		"last_message_preview", "last_message_role", "last_message_at", // fork 000056
 	},
 	"chunks":             {"source_locators"},                  // 000033
 	"mcp_oauth_tokens":   {"principal_type", "principal_id"},   // 000064
@@ -95,7 +96,7 @@ var versionedSQLiteColumns = map[string][]string{
 	}, // 000028
 }
 
-const expectedSQLiteMigrationVersion = 53
+const expectedSQLiteMigrationVersion = 56
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

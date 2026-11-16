@@ -31,6 +31,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/storageurl"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	"github.com/Tencent/WeKnora/internal/utils"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -2532,7 +2533,7 @@ func imInitialSessionTitle(msg *IncomingMessage, identityTitle func(*IncomingMes
 }
 
 // resolveUserSession finds or creates a ChannelSession keyed by (platform, user_id, chat_id, tenant_id, agent_id).
-// This is the original session resolution strategy.
+// Only mappings with an empty thread_id belong to user mode.
 //
 // Invariant: a cache miss creates a brand-new session — we never attach a second
 // mapping to an existing session. The session-list source filter (repository
@@ -2540,7 +2541,9 @@ func imInitialSessionTitle(msg *IncomingMessage, identityTitle func(*IncomingMes
 // re-maps an existing session, that JOIN needs a one-row-per-session guard.
 func (s *Service) resolveUserSession(ctx context.Context, msg *IncomingMessage, tenantID uint64, agentID string, imChannelID string) (*ChannelSession, error) {
 	var cs ChannelSession
-	result := s.db.Where("platform = ? AND user_id = ? AND chat_id = ? AND tenant_id = ? AND agent_id = ? AND deleted_at IS NULL",
+	result := s.db.Where(
+		"platform = ? AND user_id = ? AND chat_id = ? AND tenant_id = ? "+
+			"AND agent_id = ? AND thread_id = '' AND deleted_at IS NULL",
 		string(msg.Platform), msg.UserID, msg.ChatID, tenantID, agentID).
 		First(&cs)
 
@@ -2584,7 +2587,9 @@ func (s *Service) resolveUserSession(ctx context.Context, msg *IncomingMessage, 
 			logger.Warnf(ctx, "[IM] Failed to clean up orphaned session %s: %v", createdSession.ID, delErr)
 		}
 		var existing ChannelSession
-		if findErr := s.db.Where("platform = ? AND user_id = ? AND chat_id = ? AND tenant_id = ? AND agent_id = ? AND deleted_at IS NULL",
+		if findErr := s.db.Where(
+			"platform = ? AND user_id = ? AND chat_id = ? AND tenant_id = ? "+
+				"AND agent_id = ? AND thread_id = '' AND deleted_at IS NULL",
 			string(msg.Platform), msg.UserID, msg.ChatID, tenantID, agentID).
 			First(&existing).Error; findErr != nil {
 			return nil, fmt.Errorf("create channel session: %w (lookup fallback: %v)", err, findErr)
@@ -3681,15 +3686,6 @@ func (s *Service) WhatsAppNumberOwner(ctx context.Context, deviceJID string) (te
 // at the start and end of processing.
 // ────────────────────────────────────────────────────────────────────────
 
-// supportedKBFileExts is the set of file extensions that can be saved to a knowledge base.
-var supportedKBFileExts = map[string]bool{
-	"pdf": true, "txt": true, "docx": true, "doc": true,
-	"md": true, "markdown": true,
-	"png": true, "jpg": true, "jpeg": true, "gif": true,
-	"csv": true, "xlsx": true, "xls": true,
-	"pptx": true, "ppt": true,
-}
-
 // fileMessageQAContent turns a file-only platform event into a valid QA query.
 // IM adapters intentionally leave Content empty for file/image messages, while
 // the QA API requires a non-empty query. Preserve a caption when an adapter
@@ -3724,7 +3720,8 @@ func (s *Service) processDownloadedFileToKnowledgeBase(ctx context.Context, chan
 
 	fileName := file.fileName
 	ext := fileExtension(fileName)
-	if !supportedKBFileExts[ext] {
+	// Share the upload policy so IM does not silently discard supported formats.
+	if !utils.IsSupportedImportExtension(ext) {
 		logger.Infof(ctx, "[IM] Unsupported file type after download: %s (file=%s)", ext, fileName)
 		return
 	}

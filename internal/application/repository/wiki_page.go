@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -89,7 +90,7 @@ func (r *wikiPageRepository) wikiEmptyInLinksPredicate() string {
 	if r.db != nil && r.db.Dialector != nil && r.db.Dialector.Name() == "sqlite" {
 		return "(in_links IS NULL OR json_array_length(in_links) = 0)"
 	}
-	return "(in_links IS NULL OR in_links = '[]'::JSONB)"
+	return "(in_links IS NULL OR in_links IN ('[]'::JSONB, 'null'::JSONB))"
 }
 
 // Create inserts a new wiki page record
@@ -119,6 +120,9 @@ func (r *wikiPageRepository) UpdateWithRevision(
 	ctx context.Context, page *types.WikiPage, rev *types.WikiPageRevision,
 ) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := checkWikiPageWriteSnapshot(tx, page); err != nil {
+			return err
+		}
 		if rev != nil {
 			// An already-present (page_id, version) pair means a concurrent
 			// writer snapshotted the same version first; its copy is
@@ -291,19 +295,26 @@ func (r *wikiPageRepository) UpdateAutoLinkedContent(ctx context.Context, page *
 	return nil
 }
 
-// UpdateMeta updates bookkeeping / provenance fields WITHOUT incrementing the
-// version number. "Content" for versioning purposes is the user-visible page
-// body (title/content/summary/page_type/status); everything else — links,
-// source refs, chunk refs, page_metadata — is considered bookkeeping and is
-// refreshed here so the version counter only advances on real edits.
-//
-// Used by link maintenance, re-ingest (same-content case), and status changes.
+// UpdateMeta 保存来源、状态和目录等元数据，不修改反链或版本。
 func (r *wikiPageRepository) UpdateMeta(ctx context.Context, page *types.WikiPage) error {
-	result := r.db.WithContext(ctx).
+	if _, guarded := types.WikiPageWriteSnapshotFromContext(ctx); guarded {
+		return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := checkWikiPageWriteSnapshot(tx, page); err != nil {
+				return err
+			}
+			return updateWikiPageMeta(tx, page)
+		})
+	}
+	return updateWikiPageMeta(r.db.WithContext(ctx), page)
+}
+
+// updateWikiPageMeta 保留主线的窄字段写入；普通保存与快照保护的保存都不覆盖反链。
+func updateWikiPageMeta(db *gorm.DB, page *types.WikiPage) error {
+	// 反链由专用原子操作维护，避免这份元数据快照覆盖并发添加的链接。
+	result := db.
 		Model(page).
 		Where("id = ?", page.ID).
 		Updates(map[string]interface{}{
-			"in_links":      page.InLinks,
 			"out_links":     page.OutLinks,
 			"aliases":       page.Aliases,
 			"status":        page.Status,
@@ -1447,6 +1458,16 @@ func (r *wikiPageRepository) Search(
 	ctx context.Context, kbID string, query string, limit int,
 ) ([]*types.WikiPage, error) {
 	return r.SearchAcross(ctx, []string{kbID}, query, limit)
+}
+
+// SearchLiteral preserves literal text across PostgreSQL regex and SQLite LIKE.
+func (r *wikiPageRepository) SearchLiteral(
+	ctx context.Context, kbID, query string, limit int,
+) ([]*types.WikiPage, error) {
+	if r.wikiDialect() != "sqlite" {
+		query = regexp.QuoteMeta(query)
+	}
+	return r.Search(ctx, kbID, query, limit)
 }
 
 func wikiSearchPredicate(column, op string, withEscape bool) string {
