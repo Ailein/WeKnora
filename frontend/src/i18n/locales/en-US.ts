@@ -2481,7 +2481,12 @@ export default {
       mineruLegacySectionHint: 'MinerU 4.0 removed these request parameters, so they are ignored by 4.0+ servers; configure the VLM server on the MinerU side instead.',
       paddleocrVlEndpointPlaceholder: 'e.g. http://your-paddleocr-vl:8080',
       paddleocrVlEndpointHint: 'Base URL of the full PaddleOCR-VL pipeline service; no /layout-parsing suffix needed',
-      paddleocrVlCloudTokenPlaceholder: 'PaddleOCR-VL AI Studio Token'
+      paddleocrVlCloudTokenPlaceholder: 'PaddleOCR-VL AI Studio Token',
+      deepseekOcrApiKeyPlaceholder: 'DeepSeek platform API Key',
+      deepseekOcrPurposeLabel: 'Recognition',
+      deepseekOcrPurposeText: 'Text only (text_recognition)',
+      deepseekOcrPurposeRichLayout: 'Rich layout (rich_layout_recognition)',
+      deepseekOcrPurposeHint: 'Text only: Word and PowerPoint files without pictures have their text extracted; other files are read page by page. Rich layout: every file is read page by page, with the position of each block marked (WeKnora removes the marks). Billed by the pages recognised.'
     },
     storageBackend: {
       description: 'Manage the storage instances used for files and images; multiple instances of the same type can be configured.',
@@ -7361,6 +7366,10 @@ export default {
           name: 'PaddleOCR-VL',
           desc: 'PaddleOCR-VL self-hosted service'
         },
+        deepseek_ocr: {
+          name: 'DeepSeek OCR',
+          desc: 'DeepSeek OCR API (PDF, Word, PowerPoint and images)'
+        },
         paddleocr_vl_cloud: {
           name: 'PaddleOCR-VL Cloud',
           desc: 'PaddleOCR-VL Cloud API'
@@ -8475,9 +8484,9 @@ export default {
     },
     chatParser: {
       label: 'Chat Attachment Parsing Policy',
-      desc: 'Choose a parser engine per file type for this agent\'s chat attachments.',
+      desc: 'Choose a parser engine per file type for files this agent receives in the web chat and on IM channels such as WhatsApp.',
       waitTimeoutLabel: 'Attachment Parse Wait Timeout (s)',
-      waitTimeoutDesc: 'How long a chat turn waits for still-parsing attachments before proceeding with only the finished ones. Raise for large / scanned files. 0 uses the global default.'
+      waitTimeoutDesc: 'How long a chat turn waits for still-parsing attachments before proceeding with only the finished ones; on IM channels such a file is read with the default parser instead. Raise for large / scanned files. 0 uses the global default.'
     },
     faq: {
       title: 'FAQ Priority Strategy',

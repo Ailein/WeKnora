@@ -1628,9 +1628,9 @@ export default {
     },
     chatParser: {
       label: 'Политика разбора вложений чата',
-      desc: 'Выберите движок разбора по типу файла для вложений чата этого агента.',
+      desc: 'Выберите движок разбора по типу файла для вложений, которые этот агент получает в веб-чате и в IM-каналах, например WhatsApp.',
       waitTimeoutLabel: 'Тайм-аут ожидания разбора вложений (с)',
-      waitTimeoutDesc: 'Сколько ход чата ждёт ещё разбираемые вложения, прежде чем продолжить только с готовыми. Увеличьте для больших/сканированных файлов. 0 использует глобальное значение по умолчанию.'
+      waitTimeoutDesc: 'Сколько ход чата ждёт ещё разбираемые вложения, прежде чем продолжить только с готовыми; файл из IM-канала тогда читается парсером по умолчанию. Увеличьте для больших/сканированных файлов. 0 использует глобальное значение по умолчанию.'
     },
     audioUpload: {
       label: 'Загрузка аудио',
@@ -2757,6 +2757,10 @@ export default {
         weknoracloud: {
           name: 'WeKnora Cloud',
           desc: 'Парсинг документов через WeKnora Cloud'
+        },
+        deepseek_ocr: {
+          name: 'DeepSeek OCR',
+          desc: 'DeepSeek OCR API (PDF, Word, PowerPoint и изображения)'
         },
         paddleocr_vl_cloud: {
           name: 'PaddleOCR-VL Cloud',
@@ -8212,7 +8216,12 @@ export default {
       mineruLegacySectionHint: 'В MinerU 4.0 эти параметры запроса удалены, поэтому серверы 4.0+ их игнорируют; VLM-сервер настраивается на стороне MinerU.',
       paddleocrVlEndpointPlaceholder: 'напр. http://your-paddleocr-vl:8080',
       paddleocrVlEndpointHint: 'Адрес полного сервиса PaddleOCR-VL (pipeline); суффикс /layout-parsing не требуется',
-      paddleocrVlCloudTokenPlaceholder: 'Токен PaddleOCR-VL AI Studio'
+      paddleocrVlCloudTokenPlaceholder: 'Токен PaddleOCR-VL AI Studio',
+      deepseekOcrApiKeyPlaceholder: 'API Key платформы DeepSeek',
+      deepseekOcrPurposeLabel: 'Способ распознавания',
+      deepseekOcrPurposeText: 'Только текст (text_recognition)',
+      deepseekOcrPurposeRichLayout: 'С разметкой (rich_layout_recognition)',
+      deepseekOcrPurposeHint: 'Только текст: из Word и PowerPoint без картинок текст извлекается напрямую, остальные файлы распознаются постранично. С разметкой: все файлы распознаются постранично, у каждого блока отмечено положение (WeKnora убирает эти отметки). Оплата за распознанные страницы.'
     },
     weknoraCloud: {
       title: 'WeKnora Cloud',

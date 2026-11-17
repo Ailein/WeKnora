@@ -55,3 +55,14 @@ func TestParserEngineConfigToOverridesMapResolvesMinerUParseMethod(t *testing.T)
 	legacy := (&ParserEngineConfig{MinerUEnableOCR: &falseValue}).ToOverridesMap()
 	assert.Equal(t, MinerUParseMethodText, legacy["mineru_parse_method"])
 }
+
+func TestParserEngineConfigToOverridesMapCarriesDeepSeekOCR(t *testing.T) {
+	m := (&ParserEngineConfig{
+		DeepSeekOCRAPIKey:  "key",
+		DeepSeekOCRBaseURL: "https://api.deepseek.com",
+		DeepSeekOCRPurpose: "rich_layout_recognition",
+	}).ToOverridesMap()
+	assert.Equal(t, "key", m["deepseek_ocr_api_key"])
+	assert.Equal(t, "https://api.deepseek.com", m["deepseek_ocr_base_url"])
+	assert.Equal(t, "rich_layout_recognition", m["deepseek_ocr_purpose"])
+}

@@ -78,6 +78,7 @@ const PARSER_ENGINE_NAMES = [
   'mineru_cloud',
   'paddleocr_vl',
   'paddleocr_vl_cloud',
+  'deepseek_ocr',
   'weknoracloud',
   'markitdown',
   'opendataloader',

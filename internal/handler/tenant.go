@@ -1936,5 +1936,10 @@ func validateParserEngineOutboundURLs(cfg *types.ParserEngineConfig) error {
 			return fmt.Errorf("paddleocr_vl_endpoint failed SSRF validation: %v", err)
 		}
 	}
+	if base := strings.TrimSpace(cfg.DeepSeekOCRBaseURL); base != "" {
+		if err := secutils.ValidateURLForSSRF(base); err != nil {
+			return fmt.Errorf("deepseek_ocr_base_url failed SSRF validation: %v", err)
+		}
+	}
 	return nil
 }

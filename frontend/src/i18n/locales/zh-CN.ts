@@ -1630,9 +1630,9 @@ export default {
     },
     chatParser: {
       label: '聊天附件解析策略',
-      desc: '为不同文件类型指定解析引擎，仅对当前智能体的聊天附件生效',
+      desc: '为不同文件类型指定解析引擎，对当前智能体在网页聊天和 IM 渠道（如 WhatsApp）收到的附件都生效',
       waitTimeoutLabel: '附件解析等待超时（秒）',
-      waitTimeoutDesc: '单轮问答等待附件解析完成的最长时间，超时后未完成的附件会被跳过。大文件 / 扫描件可调大。0 表示使用全局默认。'
+      waitTimeoutDesc: '单轮问答等待附件解析完成的最长时间，超时后未完成的附件会被跳过；IM 渠道收到的文件改用默认解析器读取。大文件 / 扫描件可调大。0 表示使用全局默认。'
     },
     audioUpload: {
       label: '语音上传',
@@ -2759,6 +2759,10 @@ export default {
         weknoracloud: {
           name: 'WeKnora Cloud',
           desc: '使用 WeKnora Cloud 进行文档解析'
+        },
+        deepseek_ocr: {
+          name: 'DeepSeek OCR',
+          desc: 'DeepSeek OCR API（PDF、Word、PPT 和图片）'
         },
         paddleocr_vl_cloud: {
           name: 'PaddleOCR-VL Cloud',
@@ -8213,7 +8217,12 @@ export default {
       mineruLegacySectionHint: 'MinerU 4.0 已移除以下请求参数，连接 4.0 及以上服务时会被忽略；VLM 地址改在 MinerU 服务端配置。',
       paddleocrVlEndpointPlaceholder: '如 http://your-paddleocr-vl:8080',
       paddleocrVlEndpointHint: '填写 PaddleOCR-VL 完整服务（pipeline）地址，无需 /layout-parsing 后缀',
-      paddleocrVlCloudTokenPlaceholder: 'PaddleOCR-VL 飞桨星河社区 Token'
+      paddleocrVlCloudTokenPlaceholder: 'PaddleOCR-VL 飞桨星河社区 Token',
+      deepseekOcrApiKeyPlaceholder: 'DeepSeek 开放平台 API Key',
+      deepseekOcrPurposeLabel: '识别方式',
+      deepseekOcrPurposeText: '只识别文字（text_recognition）',
+      deepseekOcrPurposeRichLayout: '图文混排（rich_layout_recognition）',
+      deepseekOcrPurposeHint: '只识别文字：没有图片的 Word、PPT 直接取文字，其余文件逐页识别。图文混排：所有文件逐页识别，并标出每块内容的位置（WeKnora 会去掉这些标记）。按识别成功的页数计费。'
     },
     weknoraCloud: {
       title: 'WeKnora Cloud',

@@ -652,7 +652,15 @@ type imDownloadedAttachment struct {
 // prepareIMAttachments downloads an IM attachment and exposes its parsed text
 // (and, for images, a bounded data URI) to the QA pipeline. This is separate
 // from the optional background knowledge-base save.
-func (s *Service) prepareIMAttachments(ctx context.Context, msg *IncomingMessage, adapter Adapter) (types.MessageAttachments, []string, *imDownloadedAttachment, error) {
+//
+// The parser is the one the agent's chat attachment rules (聊天附件解析策略)
+// pick for the file type, as in the web chat. When that engine cannot be used,
+// fails, or overruns the agent's attachment wait, the file is read the way IM
+// always read it (readIMAttachmentDefault). An image still goes to the vision
+// model whatever parsed it.
+func (s *Service) prepareIMAttachments(
+	ctx context.Context, msg *IncomingMessage, adapter Adapter, agent *types.CustomAgent, tenant *types.Tenant,
+) (types.MessageAttachments, []string, *imDownloadedAttachment, error) {
 	if msg.MessageType != MessageTypeFile && msg.MessageType != MessageTypeImage {
 		return nil, nil, nil, nil
 	}
@@ -689,22 +697,22 @@ func (s *Service) prepareIMAttachments(ctx context.Context, msg *IncomingMessage
 	}
 	attachment := types.MessageAttachment{FileName: fileName, FileType: "." + ext, FileSize: int64(len(content))}
 	request := &types.ReadRequest{FileContent: content, FileName: fileName, FileType: ext}
-	var result *types.ReadResult
 	isImage := msg.MessageType == MessageTypeImage || docparser.IsImageFormat(ext)
-	if isImage && s.documentReader != nil {
-		result, err = s.documentReader.Read(attachmentCtx, request)
-		if err != nil {
-			logger.Warnf(ctx, "[IM] image OCR/document parsing failed, continuing with vision input: %v", err)
-			result, err = nil, nil
+	var result *types.ReadResult
+	engine := imAttachmentParserEngine(agent, tenant, ext)
+	if engine != "" {
+		result = s.readIMAttachmentWithEngine(ctx, engine, request, agent, tenant)
+	}
+	if result == nil && !imEngineIsDefaultReader(engine) {
+		readCtx := attachmentCtx
+		if engine != "" {
+			// The engine may have used up the download's budget: the default
+			// reader gets the time it always had.
+			var readCancel context.CancelFunc
+			readCtx, readCancel = context.WithTimeout(ctx, imAttachmentReadTimeout)
+			defer readCancel()
 		}
-	}
-	if result == nil && docparser.IsSimpleFormat(attachment.FileType) {
-		result, err = (&docparser.SimpleFormatReader{}).Read(attachmentCtx, request)
-	} else if result == nil && !isImage && s.documentReader != nil {
-		result, err = s.documentReader.Read(attachmentCtx, request)
-	}
-	if err != nil {
-		logger.Warnf(ctx, "[IM] attachment parsing failed, continuing with attachment metadata: %v", err)
+		result = s.readIMAttachmentDefault(readCtx, request, attachment.FileType, isImage)
 	}
 	if result != nil {
 		applyIMAttachmentTruncation(result.MarkdownContent, &attachment)
@@ -2177,7 +2185,7 @@ func (s *Service) executeQARequest(req *qaRequest) {
 
 	// kbIDs is left empty so the QA pipeline resolves them from the agent config.
 	var kbIDs []string
-	attachments, imageURLs, downloaded, err := s.prepareIMAttachments(ctx, req.msg, req.adapter)
+	attachments, imageURLs, downloaded, err := s.prepareIMAttachments(ctx, req.msg, req.adapter, req.agent, req.tenant)
 	if err != nil {
 		logger.Warnf(ctx, "[IM] attachment preparation failed: %v", err)
 		if sendErr := req.adapter.SendReply(ctx, req.msg, &ReplyMessage{Content: "❌ 无法读取此附件，请重试或改用文字描述。", IsFinal: true}); sendErr != nil {

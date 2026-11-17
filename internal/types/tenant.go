@@ -353,6 +353,11 @@ type ParserEngineConfig struct {
 	PaddleOCRVLCloudModel               string `json:"paddleocr_vl_cloud_model,omitempty"` // e.g. PaddleOCR-VL-1.6
 	PaddleOCRVLCloudUseSealRecognition  *bool  `json:"paddleocr_vl_cloud_use_seal_recognition,omitempty"`
 	PaddleOCRVLCloudUseChartRecognition *bool  `json:"paddleocr_vl_cloud_use_chart_recognition,omitempty"`
+
+	// DeepSeek OCR API (POST {base}/v1/tools/ocr).
+	DeepSeekOCRAPIKey  string `json:"deepseek_ocr_api_key,omitempty"`
+	DeepSeekOCRBaseURL string `json:"deepseek_ocr_base_url,omitempty"` // default https://api.deepseek.com
+	DeepSeekOCRPurpose string `json:"deepseek_ocr_purpose,omitempty"`  // text_recognition (default) or rich_layout_recognition
 }
 
 const (
@@ -488,6 +493,15 @@ func (c *ParserEngineConfig) ToOverridesMap() map[string]string {
 	}
 	if c.PaddleOCRVLCloudUseChartRecognition != nil {
 		m["paddleocr_vl_cloud_use_chart_recognition"] = fmt.Sprintf("%v", *c.PaddleOCRVLCloudUseChartRecognition)
+	}
+	if c.DeepSeekOCRAPIKey != "" {
+		m["deepseek_ocr_api_key"] = c.DeepSeekOCRAPIKey
+	}
+	if c.DeepSeekOCRBaseURL != "" {
+		m["deepseek_ocr_base_url"] = c.DeepSeekOCRBaseURL
+	}
+	if c.DeepSeekOCRPurpose != "" {
+		m["deepseek_ocr_purpose"] = c.DeepSeekOCRPurpose
 	}
 	if len(m) == 0 {
 		return nil

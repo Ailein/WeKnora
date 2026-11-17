@@ -146,6 +146,9 @@ export interface ParserEngineConfig {
   paddleocr_vl_cloud_model?: string
   paddleocr_vl_cloud_use_seal_recognition?: boolean | null
   paddleocr_vl_cloud_use_chart_recognition?: boolean | null
+  deepseek_ocr_api_key?: string
+  deepseek_ocr_base_url?: string
+  deepseek_ocr_purpose?: string
 }
 
 export interface ParserEnginesResponse {

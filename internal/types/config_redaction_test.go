@@ -167,3 +167,20 @@ func TestParserEngineConfigForResponse_NilSafe(t *testing.T) {
 func TestStorageEngineConfigForResponse_NilSafe(t *testing.T) {
 	assert.Nil(t, StorageEngineConfigForResponse(nil, true))
 }
+
+func TestParserEngineConfig_DeepSeekOCRKeyIsMaskedAndPreserved(t *testing.T) {
+	stored := &ParserEngineConfig{DeepSeekOCRAPIKey: "deepseek-secret", DeepSeekOCRPurpose: "text_recognition"}
+
+	resp := ParserEngineConfigForResponse(stored, true)
+	require.NotNil(t, resp)
+	assert.Equal(t, RedactedSecretPlaceholder, resp.DeepSeekOCRAPIKey)
+	assert.Equal(t, "text_recognition", resp.DeepSeekOCRPurpose)
+
+	merged := MergeParserEngineConfigForUpdate(&ParserEngineConfig{
+		DeepSeekOCRAPIKey:  RedactedSecretPlaceholder,
+		DeepSeekOCRPurpose: "rich_layout_recognition",
+	}, stored)
+	require.NotNil(t, merged)
+	assert.Equal(t, "deepseek-secret", merged.DeepSeekOCRAPIKey)
+	assert.Equal(t, "rich_layout_recognition", merged.DeepSeekOCRPurpose)
+}

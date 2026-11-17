@@ -2480,7 +2480,12 @@ export default {
       mineruLegacySectionHint: 'MinerU 4.0 ではこれらのリクエストパラメータが廃止されたため、4.0 以降のサーバーでは無視されます。VLM サーバーは MinerU 側で設定してください。',
       paddleocrVlEndpointPlaceholder: '例: http://your-paddleocr-vl:8080',
       paddleocrVlEndpointHint: 'PaddleOCR-VLパイプラインサービスのベースURLです。末尾に/layout-parsingを付ける必要はありません',
-      paddleocrVlCloudTokenPlaceholder: 'PaddleOCR-VL AI Studio Token'
+      paddleocrVlCloudTokenPlaceholder: 'PaddleOCR-VL AI Studio Token',
+      deepseekOcrApiKeyPlaceholder: 'DeepSeek プラットフォームの API Key',
+      deepseekOcrPurposeLabel: '認識方式',
+      deepseekOcrPurposeText: 'テキストのみ（text_recognition）',
+      deepseekOcrPurposeRichLayout: 'レイアウト付き（rich_layout_recognition）',
+      deepseekOcrPurposeHint: 'テキストのみ：画像のない Word・PowerPoint はテキストをそのまま取り出し、それ以外のファイルはページごとに認識します。レイアウト付き：すべてのファイルをページごとに認識し、各ブロックの位置を示します（WeKnora はこの印を取り除きます）。認識できたページ数で課金されます。'
     },
     storageBackend: {
       description: 'ファイルと画像に使用するストレージインスタンスを管理します。同じ種類のインスタンスを複数設定できます。',
@@ -7360,6 +7365,10 @@ export default {
           name: 'PaddleOCR-VL',
           desc: 'PaddleOCR-VLセルフホストサービス'
         },
+        deepseek_ocr: {
+          name: 'DeepSeek OCR',
+          desc: 'DeepSeek OCR API（PDF・Word・PowerPoint・画像）'
+        },
         paddleocr_vl_cloud: {
           name: 'PaddleOCR-VL Cloud',
           desc: 'PaddleOCR-VL Cloud API'
@@ -8433,9 +8442,9 @@ export default {
     },
     chatParser: {
       label: 'チャット添付ファイルの解析ポリシー',
-      desc: 'このエージェントのチャット添付ファイルについて、ファイル種別ごとに解析エンジンを選択します。',
+      desc: 'このエージェントがWebチャットとIMチャネル（WhatsAppなど）で受け取る添付ファイルについて、ファイル種別ごとに解析エンジンを選択します。',
       waitTimeoutLabel: '添付ファイル解析の待機タイムアウト（秒）',
-      waitTimeoutDesc: '1回の会話ターンで、解析中の添付ファイルを待つ最長時間です。この時間を超えると、解析が完了したファイルだけで回答を続行します。大きなファイルやスキャン文書では長めに設定してください。0でグローバルのデフォルトを使用します。'
+      waitTimeoutDesc: '1回の会話ターンで、解析中の添付ファイルを待つ最長時間です。この時間を超えると、解析が完了したファイルだけで回答を続行します（IMチャネルで受け取ったファイルは既定のパーサーで読み取ります）。大きなファイルやスキャン文書では長めに設定してください。0でグローバルのデフォルトを使用します。'
     },
     faq: {
       title: 'FAQ優先戦略',

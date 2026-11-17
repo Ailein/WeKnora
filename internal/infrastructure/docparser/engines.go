@@ -27,6 +27,8 @@ const (
 	PaddleOCRVLEngineName = "paddleocr_vl"
 	// PaddleOCRVLCloudEngineName is the PaddleOCR-VL AI Studio cloud API.
 	PaddleOCRVLCloudEngineName = "paddleocr_vl_cloud"
+	// DeepSeekOCREngineName is DeepSeek's OCR API.
+	DeepSeekOCREngineName = "deepseek_ocr"
 )
 
 func init() {
@@ -39,6 +41,7 @@ func init() {
 	RegisterEngine(&mineruCloudEngine{})
 	RegisterEngine(&paddleOCRVLEngine{})
 	RegisterEngine(&paddleOCRVLCloudEngine{})
+	RegisterEngine(&deepSeekOCREngine{})
 }
 
 // preferAnydocWhenAvailable is the type-level default override: when the
@@ -298,4 +301,33 @@ func (e *paddleOCRVLCloudEngine) NewReader(
 	_ context.Context, deps ReaderDeps,
 ) (interfaces.DocReader, error) {
 	return NewPaddleOCRVLCloudReader(deps.Overrides), nil
+}
+
+// ---------------------------------------------------------------------------
+// deepseek_ocr — Go-native, calls DeepSeek's OCR API (POST /v1/tools/ocr)
+// ---------------------------------------------------------------------------
+
+type deepSeekOCREngine struct{}
+
+func (e *deepSeekOCREngine) Name() string { return DeepSeekOCREngineName }
+
+func (e *deepSeekOCREngine) Description() string { return "DeepSeek OCR API" }
+
+// FileTypes are the types DeepSeek's OCR API takes; it tells them apart by
+// content, not by name.
+func (e *deepSeekOCREngine) FileTypes(_ bool) []string {
+	return []string{"pdf", "doc", "docx", "ppt", "pptx", "jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff"}
+}
+
+// CheckAvailable only checks that a key is set: the API has no free call to
+// try a key with, and the engine list is fetched often.
+func (e *deepSeekOCREngine) CheckAvailable(_ bool, overrides map[string]string) (bool, string) {
+	if strings.TrimSpace(overrides["deepseek_ocr_api_key"]) == "" {
+		return false, "DeepSeek OCR API Key not configured"
+	}
+	return true, ""
+}
+
+func (e *deepSeekOCREngine) NewReader(_ context.Context, deps ReaderDeps) (interfaces.DocReader, error) {
+	return NewDeepSeekOCRReader(deps.Overrides), nil
 }

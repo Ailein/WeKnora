@@ -1628,9 +1628,9 @@ export default {
     },
     chatParser: {
       label: '채팅 첨부 파싱 정책',
-      desc: '현재 에이전트의 채팅 첨부 파일 유형별 파서 엔진을 지정합니다.',
+      desc: '현재 에이전트가 웹 채팅과 IM 채널(WhatsApp 등)에서 받은 첨부 파일의 유형별 파서 엔진을 지정합니다.',
       waitTimeoutLabel: '첨부 파싱 대기 시간(초)',
-      waitTimeoutDesc: '한 번의 답변에서 파싱 중인 첨부를 기다리는 최대 시간이며, 초과하면 미완료 첨부는 건너뜁니다. 대용량/스캔 파일은 늘리세요. 0은 전역 기본값을 사용합니다.'
+      waitTimeoutDesc: '한 번의 답변에서 파싱 중인 첨부를 기다리는 최대 시간이며, 초과하면 미완료 첨부는 건너뜁니다(IM 채널에서 받은 파일은 기본 파서로 읽습니다). 대용량/스캔 파일은 늘리세요. 0은 전역 기본값을 사용합니다.'
     },
     audioUpload: {
       label: '음성 업로드',
@@ -2757,6 +2757,10 @@ export default {
         weknoracloud: {
           name: 'WeKnora Cloud',
           desc: 'WeKnora Cloud를 통한 문서 파싱'
+        },
+        deepseek_ocr: {
+          name: 'DeepSeek OCR',
+          desc: 'DeepSeek OCR API (PDF, Word, PowerPoint, 이미지)'
         },
         paddleocr_vl_cloud: {
           name: 'PaddleOCR-VL Cloud',
@@ -8212,7 +8216,12 @@ export default {
       mineruLegacySectionHint: 'MinerU 4.0에서 아래 요청 파라미터가 제거되어 4.0 이상 서버에서는 무시됩니다. VLM 서버는 MinerU 쪽에서 설정하세요.',
       paddleocrVlEndpointPlaceholder: '예: http://your-paddleocr-vl:8080',
       paddleocrVlEndpointHint: 'PaddleOCR-VL 전체 서비스(pipeline) 주소를 입력하세요. /layout-parsing 접미사는 불필요합니다',
-      paddleocrVlCloudTokenPlaceholder: 'PaddleOCR-VL AI Studio Token'
+      paddleocrVlCloudTokenPlaceholder: 'PaddleOCR-VL AI Studio Token',
+      deepseekOcrApiKeyPlaceholder: 'DeepSeek 플랫폼 API Key',
+      deepseekOcrPurposeLabel: '인식 방식',
+      deepseekOcrPurposeText: '텍스트만 (text_recognition)',
+      deepseekOcrPurposeRichLayout: '레이아웃 포함 (rich_layout_recognition)',
+      deepseekOcrPurposeHint: '텍스트만: 이미지가 없는 Word·PowerPoint는 텍스트를 바로 추출하고, 그 밖의 파일은 페이지별로 인식합니다. 레이아웃 포함: 모든 파일을 페이지별로 인식하고 각 블록의 위치를 표시합니다(WeKnora가 이 표시를 지웁니다). 인식된 페이지 수로 과금됩니다.'
     },
     weknoraCloud: {
       title: 'WeKnora Cloud',

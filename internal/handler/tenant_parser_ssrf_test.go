@@ -23,3 +23,11 @@ func TestValidateParserEngineOutboundURLs_RejectsPrivateVLMServerURL(t *testing.
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mineru_vlm_server_url")
 }
+
+func TestValidateParserEngineOutboundURLs_RejectsPrivateDeepSeekOCRBaseURL(t *testing.T) {
+	err := validateParserEngineOutboundURLs(&types.ParserEngineConfig{
+		DeepSeekOCRBaseURL: "http://10.0.0.5",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deepseek_ocr_base_url")
+}
