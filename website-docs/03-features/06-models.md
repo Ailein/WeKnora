@@ -276,6 +276,7 @@ WeMM 的模板已经包含所需特殊 token，保留 vLLM 的 `add_special_toke
 | `response_format` | string | 空 | 发送的 `response_format`，需要分段结果时填 `verbose_json` |
 | `language_param` | string | 空 | 语言提示的位置：`form`、`header`、`asr_options`；空则不发送 |
 | `max_file_bytes` / `max_encoded_bytes` | int | 0（不限） | 音频文件与 base64 编码后的大小上限 |
+| `max_duration_seconds` | int | 0（不限） | 单次请求可识别的最长音频（秒） |
 | `formats` | string[] | 空（不限） | 接受的音频扩展名（不带点） |
 | `request_timeout_seconds` | int | 300 | 单次请求超时（秒） |
 
@@ -661,7 +662,8 @@ Anthropic 走 Messages 协议；Gemini 默认走原生 `generateContent`（`base
 语音模型（逐厂商出站表单见 `internal/models/asr/wire_test.go`）：
 
 1. **不再一律发 `response_format=verbose_json`**。只有文档写明支持的模型（OpenAI `whisper-1`）返回分段；需要分段的自建行可在 `spec.compat` 里写 `{"response_format": "verbose_json"}`。
-2. **上传前按厂商文档检查大小与格式**：OpenAI / 智谱 / OpenRouter 25 MB、Requesty 32 MB、SiliconFlow / MiniMax 50 MB；阿里云与小米按 base64 编码后的 `data:` URI 计 10 MB。智谱、小米只收 wav/mp3。
+2. **上传前按厂商文档检查大小、格式与时长**：OpenAI / 智谱 / OpenRouter 25 MB、Requesty 32 MB、SiliconFlow / MiniMax 50 MB；阿里云与小米按 base64 编码后的 `data:` URI 计 10 MB。智谱、小米只收 wav/mp3；智谱单次最长 30 秒，MiniMax 500 秒。
+   超出这些限制的音频（例如 WhatsApp 语音条是 Ogg/Opus，常常超过 30 秒），在装有 ffmpeg 时（官方 app 镜像已装）先转成 16 kHz 单声道 WAV；仍超出时长或大小上限的，在每段上限前最安静的一刻（通常是停顿）切开，逐段识别后按顺序拼接，分段时间戳按偏移校正（`internal/models/asr/audioprep.go`）。厂商本就接受的文件原样发送。最多转换 30 分钟；一段失败则整条失败，不返回半截文字。没有 ffmpeg 时按原样拒绝，并在错误里说明原因。ffmpeg 只用扩展名对应的那一个解封装器读取上传文件，不做格式探测，播放列表等会引用其他文件的格式不会被打开。
 3. **回复里没有 `text` 字段即报错**；静音音频返回空字符串 `text`，照常处理。
 4. **新增支持语音的厂商**：OpenAI 兼容形状（multipart 上传）的 openai、siliconflow、gpustack、generic、智谱（`glm-asr-2512`，单文件 ≤30 秒）、MiniMax（`asr-1.0`）、OpenRouter、Requesty、LiteLLM；经对话接口传音频的阿里云 `qwen3-asr-flash`、小米 `mimo-v2.5-asr`。阿里云的其他语音模型名会被拒绝并说明原因。
 5. **知识库的「音频语言提示」会发给支持的厂商**（OpenAI / Requesty / OpenRouter / GPUStack / generic / MiniMax / 阿里云 / 小米）；智谱、SiliconFlow、LiteLLM 不支持该参数，不发。填 `auto` 等同留空。

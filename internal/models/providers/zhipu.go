@@ -110,9 +110,12 @@ func newZhipuProvider() *Definition {
 				// https://docs.bigmodel.cn/api-reference/模型-api/语音转文本:
 				// POST {base}/audio/transcriptions, multipart file + model
 				// (glm-asr-2512), answering {text}. The file is ".wav / .mp3",
-				// at most 25 MB and 30 seconds — the duration cannot be checked
-				// here without decoding, so a longer file is the vendor's error.
-				MaxFileBytes: api.Ptr(25 << 20),
+				// at most 25 MB and 30 seconds: anything else is answered 400
+				// "transcriptions不支持当前文件格式" or "transcriptions文件时长
+				// 限制为0-30秒" (both seen 2026-11). WhatsApp voice notes are
+				// Ogg/Opus and often longer, so they go as WAV pieces.
+				MaxFileBytes:       api.Ptr(25 << 20),
+				MaxDurationSeconds: api.Ptr(30),
 				// No language field; prompt and hotwords are its only hints.
 				Formats: []string{"wav", "mp3"},
 			},

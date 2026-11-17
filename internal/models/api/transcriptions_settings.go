@@ -31,6 +31,9 @@ type TranscriptionsCompat struct {
 	// MaxEncodedBytes is the documented ceiling on the base64 data URI, for
 	// the protocols that send the audio that way.
 	MaxEncodedBytes *int `json:"max_encoded_bytes,omitempty"`
+	// MaxDurationSeconds is the documented longest recording the vendor
+	// takes in one request.
+	MaxDurationSeconds *int `json:"max_duration_seconds,omitempty"`
 	// Formats lists the file extensions the vendor documents, without the
 	// dot. Empty means the vendor documents no closed list.
 	Formats        []string `json:"formats,omitempty"`
@@ -49,7 +52,15 @@ type TranscriptionsSettings struct {
 	// reject anyway, before sending it; 0 leaves the check to the vendor.
 	MaxFileBytes    int
 	MaxEncodedBytes int
-	Formats         []string
+	// MaxDurationSeconds is the longest recording one request takes; 0
+	// means the vendor documents no limit. Omitted when 0, so the resolved
+	// form of every model without a limit stays as it was.
+	MaxDurationSeconds int `json:",omitempty"`
+	// Formats lists the extensions the vendor takes. Audio in another
+	// format, or over a size or duration limit, is converted to 16 kHz mono
+	// WAV and sent in pieces when ffmpeg is installed (asr.protocolASR),
+	// and refused before sending when it is not.
+	Formats []string
 	// RequestTimeout caps one request, in seconds.
 	RequestTimeout int
 	// UnsupportedReason is set where a vendor's recognition models, or some
